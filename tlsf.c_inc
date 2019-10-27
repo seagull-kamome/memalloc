@@ -32,6 +32,10 @@
  * #define TLSF_CLZ(x)    __builtin_clzl(x)
  * #define TLSF_SLSHIFT   (2)
  * #define TLSF_PREFIX    my_
+ * // #define TLSF_DEBUG       (1)
+ * // #define TLSF_INFO_LOG     printf
+ * // #define TLSF_NOTICE_LOG   printf
+ * // #define TLSF_WARN_LOG     printf
  * // #define TLSF_EXTRA_ZONEDATA_T  struct my_extra_data
  * // #define NDEBUG         (1)
  * #include "somewherepath/tlsf.c_inc"
@@ -100,6 +104,13 @@ extern "C" {
 #  define TLSF_SIZET_MAGIC0 ((size_t)1 << (sizeof(size_t) * 8 - 1))
 #  define TLSF_SIZET_MAGIC1 ((size_t)1 << (sizeof(size_t) * 8 - 2))
 #  define TLSF_SIZET_MAGIC  ((size_t)3 << (sizeof(size_t) * 8 - 2))
+#  if defined(TLSF_DEBUG) && TLSF_DEBUG
+#    define TLSF_ASSERT(x)   do { assert(x); } while (0)
+#  else
+#    define TLSF_ASSERT      do { } while (0)
+#  endif
+
+
 
 static_assert(sizeof(size_t) * 8 > 3, "well, ...you compilers broken.");
 static_assert(TLSF_SLSHIFT > 0
@@ -120,7 +131,7 @@ static_assert(sizeof(TLSF_UNIT_T) >= 4, "No magic space of size_t.");
 #  define TLSF_MAPPING_INSERT   TLSF_GLUE(tlsf_mapping_insert)
 static inline TLSF_TPL3 TLSF_MAPPING_INSERT(size_t nunits) {
   unsigned char f = TLSF_FLSHIFT - TLSF_CLZ((nunits - 1) | (TLSF_SLDEPTH -1));
-  unsigned char s = nunits >> (f - TLSF_SLSHIFT) - TLSF_SLDEPTH;
+  unsigned char s = (nunits >> (f - TLSF_SLSHIFT)) - TLSF_SLDEPTH;
   return (TLSF_TPL3){ .fli = f, .sli = s, .ix = f * TLSF_SLDEPTH + s };
 }
 
@@ -221,18 +232,18 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
       return NULL;
     --fli;
 
-    assert(fli <= TLSF_SLSHIFT);
-    assert(fli > x.fli);
+    TLSF_ASSERT(fli <= TLSF_SLSHIFT);
+    TLSF_ASSERT(fli > x.fli);
 
     unsigned int const iz = TLSF_FFS(zone->slmap[fli * TLSF_SLDEPTH / bw]);
-    assert(iz != 0);
+    TLSF_ASSERT(iz != 0);
     p = zone->frees[fli * TLSF_SLDEPTH + iz - 1];
   }
 
-  assert(p != NULL);
+  TLSF_ASSERT(p != NULL);
   TLSF_REMOVE_CHUNK(p, zone);
-  assert((p[0].sz & TLSF_SIZET_MAGIC) == 0);
-  assert(p[0].sz >= nunits);
+  TLSF_ASSERT((p[0].sz & TLSF_SIZET_MAGIC) == 0);
+  TLSF_ASSERT(p[0].sz >= nunits);
 
   if (p[0].sz >= nunits + 2 + 4) {
     TLSF_UNIT_T *q = p + 2  + nunits;
@@ -279,29 +290,31 @@ void TLSF_FREE(void *ptr, TLSF_ZONE_T zone) {
 
 
 
-int TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone) {
+size_t TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone) {
   assert(zone != NULL);
 
   uintptr_t tail = (uintptr_t)start + nbytes;
   TLSF_UNIT_T *p = (TLSF_UNIT_T*)((uintptr_t)start & (TLSF_UNIT_ALIGN - 1));
   unsigned int n = (tail - (uintptr_t)p) / sizeof(TLSF_UNIT_T);
-  assert(n >= 5);
+  // assert(n >= 5); // FIXME: not fatal. just info.
   if (n < 5) return -1;
 
   p[0].sz = n - 2;
   p[1].sz = 0;
   p[n - 1].sz = 0;
   TLSF_ADD_CHUNK(p, zone);
-}
 
+  return (n - 3) * sizeof(TLSF_UNIT_T);
+}
 
 
 TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
   uintptr_t tail = (uintptr_t)start + nbytes;
-  TLSF_ZONE_T zone = (TLSF_ZONE_T)((uintptr_t)start & (TLSF_UNIT_ALIGN - 1));
+  TLSF_ZONE_T zone = (TLSF_ZONE_T)(((uintptr_t)start + TLSF_UNIT_ALIGN - 1) & ~(TLSF_UNIT_ALIGN - 1));
+  TLSF_ASSERT((uintptr_t)zone >= (uintptr_t)start);
   size_t skip = (uintptr_t)zone - (uintptr_t)start;
 
-  assert(nbytes >= sizeof(struct TLSF_ZONE) + skip);
+  // assert(nbytes >= sizeof(struct TLSF_ZONE) + skip); // FIXME: its not fatal, just info.
   if (nbytes < sizeof(struct TLSF_ZONE) + skip) {
     return NULL;
   }

@@ -35,11 +35,12 @@ struct test_zonedata { unsigned int dummy; };
 #define TLSF_SLSHIFT   (2)
 #define TLSF_PREFIX     my_
 #define TLSF_EXTRA_ZONEDATA_T struct test_zonedata
+#define TLSF_DEBUG     (1)
 #include "../tlsf.c_inc"
 
 
-uint8_t blk_1k[2][1024];
 uint8_t blk_10k[2][1024 * 10];
+uint8_t blk_100k[2][1024 * 10];
 
 
 my_tlsf_zone_t zone0;
@@ -52,18 +53,19 @@ describe(tlsf_create_zone, "Zone creation of TLSF memory allocation algoryhtm.")
     should_eq(NULL, my_tlsf_create_zone(NULL, 0));
 
   it("couldn't create zone for empty block.")
-    should_eq(NULL, my_tlsf_create_zone(blk_1k, 0));
+    should_eq(NULL, my_tlsf_create_zone(blk_10k, 0));
 
   it("couldn't create zone for too small block.")
-    should_eq(NULL, my_tlsf_create_zone(blk_1k[0], 20));
+    should_eq(NULL, my_tlsf_create_zone(blk_10k[0], 20));
 
   it("might create zone for enough size of memory.")
     size_t i;
-    for (size_t i = 1; i < 1024; ++i) {
-      zone0 = my_tlsf_create_zone(blk_1k, i);
+    for (i = 1; i < 1024 * 10; ++i) {
+      zone0 = my_tlsf_create_zone(blk_10k, i);
+      if (zone0) break;
     }
+    nanospec_printf("\n  >>> Inspected minimum size is %lu\n", i);
     assert_ne(NULL, zone0);
-    nanospec_printf("\n  Inspected minimum size is %d\n", i);
 
 
 #if 0
