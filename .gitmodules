@@ -1,0 +1,3 @@
+[submodule "tests/nanocspec"]
+	path = tests/nanocspec
+	url = https://github.com/seagull-kamome/nanocspec.git
