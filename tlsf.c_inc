@@ -1,0 +1,338 @@
+/**
+ * @file
+ * @brief Implementation of TLSF memory allocation algorithm.
+ * @section LICENSE
+ *
+ * MIT License
+ *
+ * Copyright (c) 2019 Hattori, Hiroki
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ * @section Usage
+ *
+ * ```` your_c_source.c
+ * #define TLSF_FFS(x)    __builtin_ffsl(x)
+ * #define TLSF_CLZ(x)    __builtin_clzl(x)
+ * #define TLSF_SLSHIFT   (2)
+ * #define TLSF_PREFIX    my_
+ * // #define TLSF_EXTRA_ZONEDATA_T  struct my_extra_data
+ * // #define NDEBUG         (1)
+ * #include "somewherepath/tlsf.c_inc"
+ * ````
+ *
+ * ```` youe_c_header.h
+ * #define TLSF_PREFIX    my_
+ * #define TLSF_DECL_ONLY (1)
+ * #include "somewherepath/tlsf.c_inc"
+ * #undef TLSF_PREFIX
+ * #undef TLSF_DECL_ONLY
+ * ````
+ *
+ * @section Chunk layout
+ *   1. mysize + magic   (0 = tail)
+ *   2. prevsize         (0 = head)
+ *   3. nextchunk
+ *   4. prevchunk
+ *
+ */
+
+#include <stddef.h>
+
+
+#define TLSF_ZONE              TLSF_PREFIX##tlsf_zone
+#define TLSF_ZONE_T            TLSF_PREFIX##tlsf_zone_t
+#define TLSF_FREE              TLSF_PREFIX##tlsf_free
+#define TLSF_ALLOC             TLSF_PREFIX##tlsf_alloc
+#define TLSF_CREATE_ZONE       TLSF_PREFIX##tlsf_create_zone
+#define TLSF_ADD_BLOCK         TLSF_PREFIX##tlsf_add_block
+
+
+/* ************************************************************************ */
+#if defined(TLSF_DECL_ONLY) && TLSF_DECL_ONLY
+#  if defined(__cplusplus)
+extern "C" {
+#  endif
+
+
+typedef struct TLSF_ZONE TLSF_ZONE_T;
+void *TLSF_ALLOC(void *start, size_t nbytes, TLSF_ZONE_T zone);
+void TLSF_FREE(void *ptr, TLSF_ZONE_T zone);
+int TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone);
+TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes);
+
+#  if defined(__cplusplus)
+}
+#  endif
+#else
+/* ************************************************************************ */
+#  include <stdint.h>
+#  include <memory.h>
+#  include <assert.h>
+
+#  if defined(__cplusplus)
+extern "C" {
+#  endif
+
+#  define TLSF_FLSHIFT  (sizeof(size_t) * 8 - TLSF_SLSHIFT + 1)
+#  define TLSF_SLDEPTH  (1 << TLSF_SLSHIFT)
+#  define TLSF_SLMAPSIZE   (TLSF_FLSHIFT * TLSF_SLDEPTH)
+#  define TLSF_SIZET_MAGIC0 ((size_t)1 << (sizeof(size_t) * 8 - 1))
+#  define TLSF_SIZET_MAGIC1 ((size_t)1 << (sizeof(size_t) * 8 - 2))
+#  define TLSF_SIZET_MAGIC  ((size_t)3 << (sizeof(size_t) * 8 - 2))
+
+static_assert(sizeof(size_t) * 8 > 3, "well, ...you compilers broken.");
+static_assert(TLSF_SLSHIFT > 0
+           && TLSF_SLSHIFT < sizeof(size_t) * 8 - 2, "Bad TLSF_SLSHIFT");
+static_assert(sizeof(uintptr_t) * 8 % TLSF_SLDEPTH == 0, "Unsupported case.");
+
+
+#  define TLSF_TPL3  struct TLSF_PREFIX##tlsf_tuple3
+TLSF_TPL3 { unsigned char fli, sli; unsigned short ix; };
+#  define TLSF_UNIT_T   union TLSF_PREFIX##tlsf_unit
+TLSF_UNIT_T { size_t sz; TLSF_UNIT_T *ptr; };
+static_assert(sizeof(TLSF_UNIT_T) >= 4, "No magic space of size_t.");
+#  define TLSF_UNIT_ALIGN    (sizeof(TLSF_UNIT_T))
+
+
+
+
+#  define TLSF_MAPPING_INSERT   TLSF_PREFIX##tlsf_mapping_insert
+static inline TLSF_TPL3 TLSF_MAPPING_INSERT(size_t nunits) {
+  unsigned char f = TLSF_FLSHIFT - TLSF_CLZ((nunits - 1) | (TLSF_SLDEPTH -1));
+  unsigned char s = nunits >> (f - TLSF_SLSHIFT) - TLSF_SLDEPTH;
+  return (TLSF_TPL3){ .fli = f, .sli = s, .ix = f * TLSF_SLDEPTH + s };
+}
+
+
+
+
+
+typedef struct TLSF_ZONE {
+#  if defined(TLSF_EXTRA_ZONEDATA_T)
+  TLSF_EXTRA_ZONEDATA_T extra;
+#  endif
+  size_t flmap;
+  uintptr_t slmap[
+    (TLSF_SLMAPSIZE + sizeof(uintptr_t) * 8 - 1) / (sizeof(uintptr_t) * 8)];
+  TLSF_UNIT_T *frees[TLSF_SLMAPSIZE];
+  TLSF_UNIT_T firstchunk[];
+} *TLSF_ZONE_T;
+
+
+
+
+#  define TLSF_ADD_CHUNK     TLSF_PREFIX##tlsf_add_chunk
+static void TLSF_ADD_CHUNK(TLSF_UNIT_T *chunk) {
+  assert(0 == (chunk[0].sz & TLSF_SIZET_MAGIC0));
+  chunk[0].sz |= TLSF_SIZET_MAGIC1;
+
+  TLSF_TPL3 const x = TLSF_MAPPING_INSERT(chunk[0].sz);
+  TLSF_UNIT_T *nxt = zone->frees[x.ix];
+  if (nxt == NULL) {
+    chunk[2].ptr = chunk;
+    chunk[3].ptr = chunk;
+    zone->frees[x.ix] = chunk;
+
+    // Mark bitmap as available.
+    size_t const bw = sizeof(uintptr_t) * 8;
+    zone->slmap[x.ix / bw] |= (uintptr_t)1 << (ix % bw);
+    zone->flmap |= (size_t)1 << x.sli;
+  } else {
+    TLSF_UNIT_T *prv = nxt[3].ptr;
+    chunk[2].ptr = nxt;
+    chunk[3].ptr = prv;
+    nxt[3].ptr = chunk;
+    prv[2].ptr = chunk;
+  }
+}
+
+
+
+#  define TLSF_REMOVE_CHUNK  TLSF_PREFIX##tlsf_remove_chunk
+static void TLSF_REMOVE_CHUNK(TLSF_UNIT_T *chunk) {
+  assert(chunk); // it coruppsed.
+  assert((chunk[0] & TLSF_SIZET_MAGIC0) == 0); // it coruppsed.
+
+  chunk[3].ptr[2].ptr = chunk[2].ptr; // chunk->prv->next = chunk->next
+  chunk[2].ptr[3].ptr = chunk[3].ptr; // chunk->next->prv = chunk->prv
+  if (chunk[0].sz & TLSF_SIZET_MAGIC1) { // it's first chunk.
+    chunk[0].sz &= ~TLSF_SIZET_MAGIC1;
+    TLSF_TPL3 const x = TLSF_MAPPING_INSERT(chunk[0].sz);
+    if (chunk[2].ptr == chunk) { // to be empty.
+      zone->frees[x.ix] = NULL;
+
+      // Mark bitmap as unavalable.
+      size_t const bw = sizeof(uintptr_t) * 8;
+      zone->slmap[ix / bw] &= (uintptr_t)1 << (ix % bw);
+      uintptr_t const msk = (((uintptr_t)1 << TLSF_SLSHIFT) - 1) <<
+        ((x.sli % (1 << TLSF_SLSHIFT)) * TLSF_SLSHIFT);
+      if (! (zone->slmap[ix / bw] & msk))
+        zone->flmap &= ~((size_t)1 << x.sli);
+    } else {
+      zone->frees[x.ix] = chunk[2].ptr;
+      chunk[2].ptr[0].sz |= TLSF_SIZET_MAGIC1;
+    }
+  }
+}
+
+
+
+
+
+void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
+  assert(zone != NULL);
+
+  if (nbytes == 0) return NULL;
+
+  size_t nunits = (nytes + sizeof(TLSF_UNIT_T) - 1) / sizeof(TLSF_UNIT_T);
+  if (nunits < 2) nunits = 2; // Minimum allocation size is 2.
+
+  TLSF_TPL3 const x = TLSF_MAPPING_INSERT(nunits);
+
+  size_t const bw = sizeof(uintptr_t) * 8;
+  unsigned int const iy = TLSF_FFS(zone->slmap[x.ix / bw] & ((uintptr_t)-1 << (x.ix % bw)) );
+  TLSF_UNIT_T *p;
+  if (iy) {
+    p = zone->frees[x.ix % bw + iy - 1];
+  } else {
+    unsigned char fli = TLSF_FFI(zone->flmap & ((size_t)-1 << x.fli));
+    if (fli == 0) // No enough memory.
+      return NULL;
+    --fli;
+
+    assert(fli <= TLSF_SLSHIFT);
+    assert(fli > x.fli);
+
+    unsigned int const iz = TLSF_FFS(zone->slmap[fli * TLSF_SLDEPTH / bw]);
+    assert(iz != 0);
+    p = zone->frees[fli * TLSF_SLDEPTH + iz - 1];
+  }
+
+  assert(p != NULL);
+  TLSF_REMOVE_CHUNK(p);
+  assert((p[0].sz & TLSF_SIZET_MAGIC) == 0);
+  assert(p[0] >= nunits);
+
+  if (p[0].sz >= nunits + 2 + 4) {
+    TLSF_UNIT_T *q = p + 2  + nunits;
+    q[0].sz = p[0].sz - 2 - nunits;
+    p[2 + p[0].sz + 1].sz = q[0].sz;
+    q[1].sz = nunits;
+    p[0].sz = nunits;
+    TLSF_ADD_CHUNK(q);
+  }
+
+  p[0].sz |= TLSF_SIZET_MAGIC0;  // Mark as used.
+  return (void*)(p + 2):
+}
+
+
+
+
+void TLSF_FREE(void *ptr, TLSF_ZONE_T zone) {
+  assert(zone != NULL);
+
+  TLSF_UNIT_T *p = (TLSF_CHUNK)ptr - 2;
+  TLSF_UNIT_T *const ql = p[3].ptr;
+  TLSF_UNIT_T *const qr = p[2].ptr;
+
+  p[0].sz &= ~TLSF_SIZET_MAGIC0;
+
+  // Merge right.
+  if (qr[0].sz != 0 && !(qr.sz & TLSF_SIZET_MAGIC0)) {
+    TLSF_REMOVE_CHUNK(qr);
+    p[0].sz += qr[0].sz;
+    qr[2 + qr[0].sz + 1].sz = p[0].sz;
+  }
+
+  // Merge left.
+  if (ql[1].sz != 0 && !(ql.sz & TLSF_SIZET_MAGIC0)) {
+    TLSF_REMOVE_CHUNK(ql);
+    ql[0].sz += p[0].sz;
+    p[2 + p[0].sz + 1] = ql[0].sz;
+    p = ql;
+  }
+
+  TLSF_ADD_CHUNK(p);
+}
+
+
+
+int TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone) {
+  assert(zone != NULL);
+
+  uintptr_t tail = (uintptr_t)start + nbytes;
+  TLSF_UNIT_T *p = (TLSF_UNIT_T*)((uintptr_t)start & (TLSF_UNIT_ALIGN - 1));
+  unsigned int n = (tail - (uintptr_t)p) / sizeof(TSLF_UNIT);
+  assert(n >= 5);
+  if (n < 5) return -1;
+
+  p[0] = n - 2;
+  p[1] = 0;
+  p[n - 1] = 0;
+  TLSF_ADD_CHUNK(p);
+}
+
+
+
+TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
+  uintptr_t tail = (uintptr_t)start + nbytes;
+  TLSF_ZONE_T zone = (uintptr_t)start & (TLSF_UNIT_ALIGN - 1);
+  size_t skip = (uintptr_t)zone - (uintptr_t)start;
+
+  assert(nbytes >= sizeof(struct TLSF_ZONE) + skip) {
+  if (nbytes < sizeof(struct TLSF_ZONE) + skip) {
+    return NULL;
+  }
+  if ((tail - (uintptr_t)zone->firstchunk) >= 5 * sizeof(TLSF_UNIT_T))
+    TLSF_ADD_BLOCK(zone->firstchunk, tail - (uintptr_t)zone->firstchunk);
+
+  return zone;
+}
+
+
+#  undef TLSF_FLSHIFT
+#  undef TLSF_SLDEPTH
+#  undef TLSF_SLMAPSIZE
+#  undef TLSF_SIZET_MAGIC0
+#  undef TLSF_SIZET_MAGIC1
+#  undef TLSF_SIZET_MAGIC
+#  undef TLSF_TPL3
+#  undef TLSF_UNIT_T
+#  undef TLSF_UNIT_ALIGN
+
+#  undef TLSF_MAPPING_INSERT
+#  undef TLSF_ADD_CHUNK
+#  undef TLSF_REMOVE_CHUNK
+
+#  if defined(__cplusplus)
+}
+#  endif
+#endif
+
+
+#undef TLSF_ZONE
+#undef TLSF_ZONE_T
+#undef TLSF_FREE
+#undef TLSF_ALLOC
+#undef TLSF_CREATE_ZONE
+#undef TLSF_ADD_BLOCK
+
+// vim: ts=8 sw=2 filetype=c cindent expandtab :
