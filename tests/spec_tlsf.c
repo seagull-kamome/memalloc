@@ -36,6 +36,7 @@ struct test_zonedata { unsigned int dummy; };
 #define TLSF_PREFIX     my_
 #define TLSF_EXTRA_ZONEDATA_T struct test_zonedata
 #define TLSF_DEBUG     (1)
+#define TLSF_WARN_HANDLER nanospec_printf
 #include "../tlsf.c_inc"
 
 
@@ -59,13 +60,12 @@ describe(tlsf_create_zone, "Zone creation of TLSF memory allocation algoryhtm.")
     should_eq(NULL, my_tlsf_create_zone(blk_10k[0], 20));
 
   it("might create zone for enough size of memory.")
-    size_t i;
-    for (i = 1; i < 1024 * 10; ++i) {
-      zone0 = my_tlsf_create_zone(blk_10k, i);
-      if (zone0) break;
-    }
-    nanospec_printf("\n  >>> Inspected minimum size is %lu\n", i);
-    assert_ne(NULL, zone0);
+    should_eq(NULL, my_tlsf_create_zone(blk_10k, my_tlsf_config.zone_header_size - 1));
+    zone0 = my_tlsf_create_zone(blk_10k, my_tlsf_config.zone_header_size);
+    should_ne(NULL, zone0);
+
+    zone0 = my_tlsf_create_zone(blk_10k, my_tlsf_config.zone_header_size + 101);
+    should_ne(NULL, zone0);
 
 
 #if 0

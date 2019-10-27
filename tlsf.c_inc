@@ -33,9 +33,7 @@
  * #define TLSF_SLSHIFT   (2)
  * #define TLSF_PREFIX    my_
  * // #define TLSF_DEBUG       (1)
- * // #define TLSF_INFO_LOG     printf
- * // #define TLSF_NOTICE_LOG   printf
- * // #define TLSF_WARN_LOG     printf
+ * // #define TLSF_WARN_HANDLER     printf
  * // #define TLSF_EXTRA_ZONEDATA_T  struct my_extra_data
  * // #define NDEBUG         (1)
  * #include "somewherepath/tlsf.c_inc"
@@ -70,6 +68,17 @@
 #define TLSF_ALLOC             TLSF_GLUE(tlsf_alloc)
 #define TLSF_CREATE_ZONE       TLSF_GLUE(tlsf_create_zone)
 #define TLSF_ADD_BLOCK         TLSF_GLUE(tlsf_add_block)
+#define TLSF_CONFIG            TLSF_GLUE(tlsf_config)
+#define TLSF_CONFIG_TAG        TLSF_GLUE(tlsf_config_tag)
+
+struct TLSF_CONFIG_TAG {
+  size_t unit_size;
+  size_t zone_header_size;
+  size_t zone_extra_data_size;
+  unsigned char fl_shift;
+  unsigned char sl_shift;
+  unsigned char machine_alignment;
+};
 
 
 /* ************************************************************************ */
@@ -84,6 +93,8 @@ void *TLSF_ALLOC(void *start, size_t nbytes, TLSF_ZONE_T zone);
 void TLSF_FREE(void *ptr, TLSF_ZONE_T zone);
 int TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone);
 TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes);
+
+extern struct TLSF_CONFIG_TAG TLSF_CONFIG;
 
 #  if defined(__cplusplus)
 }
@@ -109,6 +120,11 @@ extern "C" {
 #  else
 #    define TLSF_ASSERT      do { } while (0)
 #  endif
+#  if defined(TLSF_WARN_HANDLER)
+#    define TLSF_WARN(fmt, ...)  do { TLSF_WARN_HANDLER(fmt, __VA_ARGS__); } while (0)
+#  else
+#    define TLSF_WARN(fmt, ...)  do { } while (0)
+#  endif
 
 
 
@@ -124,9 +140,6 @@ TLSF_TPL3 { unsigned char fli, sli; unsigned short ix; };
 TLSF_UNIT_T { size_t sz; TLSF_UNIT_T *ptr; };
 static_assert(sizeof(TLSF_UNIT_T) >= 4, "No magic space of size_t.");
 #  define TLSF_UNIT_ALIGN    (sizeof(TLSF_UNIT_T))
-
-
-
 
 #  define TLSF_MAPPING_INSERT   TLSF_GLUE(tlsf_mapping_insert)
 static inline TLSF_TPL3 TLSF_MAPPING_INSERT(size_t nunits) {
@@ -149,6 +162,24 @@ typedef struct TLSF_ZONE {
   TLSF_UNIT_T *frees[TLSF_SLMAPSIZE];
   TLSF_UNIT_T firstchunk[];
 } *TLSF_ZONE_T;
+
+
+
+struct TLSF_CONFIG_TAG TLSF_CONFIG = {
+  .unit_size = sizeof(TLSF_UNIT_T),
+  .zone_header_size = sizeof(struct TLSF_ZONE),
+#  if defined(TLSF_EXTRA_ZONEDATA_T)
+  .zone_extra_data_size = sizeof(TLSF_EXTRA_ZONEDATA_T),
+#  else
+  .zone_extra_data_size = 0,
+#endif
+  .fl_shift = TLSF_FLSHIFT,
+  .sl_shift = TLSF_SLSHIFT,
+  .machine_alignment = TLSF_UNIT_ALIGN,
+};
+
+
+
 
 
 
@@ -265,10 +296,10 @@ void TLSF_FREE(void *ptr, TLSF_ZONE_T zone) {
   assert(zone != NULL);
 
   TLSF_UNIT_T *p = (TLSF_UNIT_T*)ptr - 2;
-  TLSF_UNIT_T *const ql = p[3].ptr;
-  TLSF_UNIT_T *const qr = p[2].ptr;
-
   p[0].sz &= ~TLSF_SIZET_MAGIC0;
+
+  TLSF_UNIT_T *const ql = p - p[1].sz - 2;
+  TLSF_UNIT_T *const qr = p + p[0].sz + 2;
 
   // Merge right.
   if (qr[0].sz != 0 && !(qr[0].sz & TLSF_SIZET_MAGIC0)) {
@@ -294,12 +325,15 @@ size_t TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone) {
   assert(zone != NULL);
 
   uintptr_t tail = (uintptr_t)start + nbytes;
-  TLSF_UNIT_T *p = (TLSF_UNIT_T*)((uintptr_t)start & (TLSF_UNIT_ALIGN - 1));
+  TLSF_UNIT_T *p = (TLSF_UNIT_T*)(((uintptr_t)start + TLSF_UNIT_ALIGN - 1) & ~(TLSF_UNIT_ALIGN - 1));
   unsigned int n = (tail - (uintptr_t)p) / sizeof(TLSF_UNIT_T);
-  // assert(n >= 5); // FIXME: not fatal. just info.
-  if (n < 5) return -1;
+  if (n < 5) {
+    TLSF_WARN("%s: Too small block size. start=%p; nbytes=%lu (%u units).\n",
+      __FUNCTION__, start, nbytes, n);
+    return 0;
+  }
 
-  p[0].sz = n - 2;
+  p[0].sz = n - 3;
   p[1].sz = 0;
   p[n - 1].sz = 0;
   TLSF_ADD_CHUNK(p, zone);
@@ -314,8 +348,10 @@ TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
   TLSF_ASSERT((uintptr_t)zone >= (uintptr_t)start);
   size_t skip = (uintptr_t)zone - (uintptr_t)start;
 
-  // assert(nbytes >= sizeof(struct TLSF_ZONE) + skip); // FIXME: its not fatal, just info.
   if (nbytes < sizeof(struct TLSF_ZONE) + skip) {
+    TLSF_WARN("%s: Too small block size. start=%p; nbytes=%lu;"
+              " %lu bytes dropped for alignment; need %lu bytes at least.\n",
+        __FUNCTION__, start, nbytes, skip, sizeof(struct TLSF_ZONE));
     return NULL;
   }
   if ((tail - (uintptr_t)zone->firstchunk) >= 5 * sizeof(TLSF_UNIT_T))
@@ -331,6 +367,8 @@ TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
 #  undef TLSF_SIZET_MAGIC0
 #  undef TLSF_SIZET_MAGIC1
 #  undef TLSF_SIZET_MAGIC
+#  undef TLSF_ASSERT
+#  undef TLSF_WARN
 #  undef TLSF_TPL3
 #  undef TLSF_UNIT_T
 #  undef TLSF_UNIT_ALIGN
@@ -351,5 +389,7 @@ TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
 #undef TLSF_ALLOC
 #undef TLSF_CREATE_ZONE
 #undef TLSF_ADD_BLOCK
+#undef TLSF_CONFIG
+#undef TLSF_CONFIG_TAG
 
 // vim: ts=8 sw=2 filetype=c cindent expandtab :
