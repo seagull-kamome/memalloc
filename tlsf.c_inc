@@ -155,13 +155,6 @@ static inline TLSF_TPL3 TLSF_MAPPING_INSERT(size_t nunits) {
   return x;
 }
 
-#  define TLSF_MAPPING_INSERT   TLSF_GLUE(tlsf_mapping_insert)
-static inline TLSF_TPL3 TLSF_MAPPING_SEARCH(size_t nunits) {
-  unsigned char f = TLSF_FLSHIFT - TLSF_CLZ((nunits - 1) | ((TLSF_SLDEPTH << 1)- 1));
-  return TLSF_MAPPING_INSERT(nunits + (((size_t)1 << (f?f:1)) - 1));
-}
-
-
 
 
 
@@ -194,12 +187,9 @@ struct TLSF_CONFIG_TAG TLSF_CONFIG = {
 
 
 
-
-
-
 #  define TLSF_ADD_CHUNK     TLSF_GLUE(tlsf_add_chunk)
 static void TLSF_ADD_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
-  assert(0 == (chunk[0].sz & TLSF_SIZET_MAGIC));
+  TLSF_ASSERT(0 == (chunk[0].sz & TLSF_SIZET_MAGIC));
 
   TLSF_TPL3 const x = TLSF_MAPPING_INSERT(chunk[0].sz);
   chunk[0].sz |= TLSF_SIZET_MAGIC1;
@@ -228,8 +218,8 @@ static void TLSF_ADD_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
 
 #  define TLSF_REMOVE_CHUNK  TLSF_GLUE(tlsf_remove_chunk)
 static void TLSF_REMOVE_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
-  assert(chunk); // it coruppsed.
-  assert((chunk[0].sz & TLSF_SIZET_MAGIC0) == 0); // it coruppsed.
+  TLSF_ASSERT(chunk); // it coruppsed.
+  TLSF_ASSERT(chunk[0].sz & TLSF_SIZET_MAGIC0) == 0); // it coruppsed.
 
   chunk[3].ptr[2].ptr = chunk[2].ptr; // chunk->prv->next = chunk->next
   chunk[2].ptr[3].ptr = chunk[3].ptr; // chunk->next->prv = chunk->prv
@@ -266,7 +256,9 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
   size_t nunits = (nbytes + sizeof(TLSF_UNIT_T) - 1) / sizeof(TLSF_UNIT_T);
   if (nunits < 2) nunits = 2; // Minimum allocation size is 2.
 
-  TLSF_TPL3 const x = TLSF_MAPPING_SEARCH(nunits);
+  TLSF_TPL3 const x = ({
+    unsigned char f = TLSF_FLSHIFT - TLSF_CLZ((nunits - 1) | ((TLSF_SLDEPTH << 1)- 1));
+    TLSF_MAPPING_INSERT(nunits + (((size_t)1 << (f?f:1)) - 1)); });
 
   size_t const bw = sizeof(uintptr_t) * 8;
   unsigned int const iy = TLSF_FFS(zone->slmap[x.ix / bw] & ((uintptr_t)-1 << (x.ix % bw)) );
