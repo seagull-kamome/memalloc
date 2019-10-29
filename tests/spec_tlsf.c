@@ -32,7 +32,7 @@ struct test_zonedata { unsigned int dummy; };
 
 #define TLSF_FFS        __builtin_ffsl
 #define TLSF_CLZ        __builtin_clzl
-#define TLSF_SLSHIFT   (2)
+#define TLSF_SLSHIFT   (TEST_SL)
 #define TLSF_PREFIX     my_
 #define TLSF_EXTRA_ZONEDATA_T struct test_zonedata
 #define TLSF_DEBUG     (1)
@@ -129,7 +129,11 @@ describe(tlsf_alloc, "Allocate memory.")
     should_ne(NULL, my_tlsf_alloc(100, zone0));
     should_ne(NULL, my_tlsf_alloc(1000, zone0));
     should_ne(NULL, my_tlsf_alloc(5000, zone0));
+#if TEST_SL==0
+    should_ne(NULL, my_tlsf_alloc(65544, zone0));
+#else
     should_ne(NULL, my_tlsf_alloc(98000, zone0));
+#endif
 
 end_describe
 

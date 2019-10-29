@@ -47,11 +47,74 @@
  * #undef TLSF_DECL_ONLY
  * ````
  *
+ * @section Configuration variable.
+ *
+ * - TLSF_FFS(x)
+ *
+ *   Your own find-first-set function. Or, __builtin_ffsl for gcc.
+ *
+ * - TLSF_CLZ(x)
+ *
+ *   Your own count-leading-zeros function, Or, __builtin_clz for gcc.
+ *
+ * - TLSF_SLSHIFT
+ *
+ *   Number of bits for second level index. You can use zero for single level
+ *   mode.
+ *
+ * - TLSF_PREFIX
+ *
+ *   Custom prefix of function and types.
+ *
+ * - TLSF_DEBUG
+ *
+ *   Define (1) to enable internal debugging code. 0 or undefine to disable.
+ *
+ * - TLSF_WARN_HANDLER(fmt, ...)
+ *
+ *   Warnning message handler for non-fatal error case.
+ *   undefine to supress it.
+ *
+ * - TLSF_EXTRA_ZONEDATA_T
+ *
+ *   Add extra data to zone header. You can access it with cast the zone
+ *   pointer. Undefine to ommit it.
+ *
+ *  - NDEBUG
+ *
+ *   You can ommit parameter checker from all APIs.
+ *
  * @section Chunk layout
  *   1. mysize + magic   (0 = tail)
  *   2. prevsize         (0 = head)
  *   3. nextchunk
  *   4. prevchunk
+ *
+ * @section APIs
+ *
+ * @fn [PREFIX]tlsf_zone_t [PREFIX]tlsf_create_zone(void *start, size_t nbytes)
+ * @brief Create new heap zone.
+ * @param start    Pointer to free memory space.
+ * @param nbytes   Size of memory space.
+ * @return a zone handle. Or, NULL for too small memory size.
+ *
+ * You can cast that zone handle to TLSF_EXTRA_ZONEDATA_T* to access your
+ * custom data.
+ *
+ * @fn size_t [PREFIX]tlsf_add_block(void *start, size_t nbytes, [PREFIX]tlsf_zone_t zone)
+ * @brief Extend free space with another memory space.
+ * @param start    Pointer to free memory space.
+ * @param nbytes   Size of memory space.
+ * @param zone     Zone handle.
+ * @returns Actual extended size in bytes. 0 for too small memory size.
+ *
+ * @fn void *[PREFIX]tlsf_alloc(size_t nbytes, [PREFIX]tlsf_zone_t zone)
+ * @brief Allocate memory chunk.
+ * @param nbytes    Bytes to allocate.
+ * @param zone      Zone handle.
+ * @return Pointer to allocated space. Or NULL for exhausted.
+ *
+ * @fn void [PREFIX]tlsf_free(void *ptr, [PREFIX]tlsf_zone_t zone)
  *
  */
 
@@ -131,9 +194,10 @@ extern "C" {
 
 
 static_assert(sizeof(size_t) * 8 > 3, "well, ...you compilers broken.");
-static_assert(TLSF_SLSHIFT > 0
+static_assert(TLSF_SLSHIFT >= 0
            && TLSF_SLSHIFT < sizeof(size_t) * 8 - 2, "Bad TLSF_SLSHIFT");
-static_assert(sizeof(uintptr_t) * 8 % TLSF_SLDEPTH == 0, "Unsupported case.");
+static_assert(TLSF_SLSHIFT == 0 || sizeof(uintptr_t) * 8 % TLSF_SLDEPTH == 0,
+    "Unsupported case.");
 
 
 #  define TLSF_TPL3  struct TLSF_GLUE(tlsf_tuple3)
