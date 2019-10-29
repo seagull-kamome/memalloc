@@ -189,7 +189,8 @@ struct TLSF_CONFIG_TAG TLSF_CONFIG = {
 
 #  define TLSF_ADD_CHUNK     TLSF_GLUE(tlsf_add_chunk)
 static void TLSF_ADD_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
-  TLSF_ASSERT(0 == (chunk[0].sz & TLSF_SIZET_MAGIC));
+  TLSF_ASSERT(zone != NULL);
+  TLSF_ASSERT((chunk[0].sz & TLSF_SIZET_MAGIC) == 0);
 
   TLSF_TPL3 const x = TLSF_MAPPING_INSERT(chunk[0].sz);
   chunk[0].sz |= TLSF_SIZET_MAGIC1;
@@ -218,8 +219,9 @@ static void TLSF_ADD_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
 
 #  define TLSF_REMOVE_CHUNK  TLSF_GLUE(tlsf_remove_chunk)
 static void TLSF_REMOVE_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
+  TLSF_ASSERT(zone != NULL);
   TLSF_ASSERT(chunk); // it coruppsed.
-  TLSF_ASSERT(chunk[0].sz & TLSF_SIZET_MAGIC0) == 0); // it coruppsed.
+  TLSF_ASSERT((chunk[0].sz & TLSF_SIZET_MAGIC0) == 0); // it coruppsed.
 
   chunk[3].ptr[2].ptr = chunk[2].ptr; // chunk->prv->next = chunk->next
   chunk[2].ptr[3].ptr = chunk[3].ptr; // chunk->next->prv = chunk->prv
@@ -355,8 +357,10 @@ size_t TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone) {
 }
 
 
+
 TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
   assert(start != NULL);
+  assert((uintptr_t)start <= (uintptr_t)(void*)-1 - nbytes);
 
   uintptr_t tail = (uintptr_t)start + nbytes;
   TLSF_ZONE_T zone = (TLSF_ZONE_T)(((uintptr_t)start + TLSF_UNIT_ALIGN - 1) & ~(TLSF_UNIT_ALIGN - 1));
