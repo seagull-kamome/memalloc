@@ -200,8 +200,6 @@ static_assert(TLSF_SLSHIFT == 0 || sizeof(uintptr_t) * 8 % TLSF_SLDEPTH == 0,
     "Unsupported case.");
 
 
-#  define TLSF_TPL3  struct TLSF_GLUE(tlsf_tuple3)
-TLSF_TPL3 { unsigned char fli, sli; unsigned short ix; };
 #  define TLSF_UNIT_T   union TLSF_PREFIX##tlsf_unit
 TLSF_UNIT_T { size_t sz; TLSF_UNIT_T *ptr; };
 static_assert(sizeof(TLSF_UNIT_T) >= 4, "No magic space of size_t.");
@@ -210,13 +208,10 @@ static_assert(sizeof(TLSF_UNIT_T) >= 4, "No magic space of size_t.");
 
 
 #  define TLSF_MAPPING_INSERT   TLSF_GLUE(tlsf_mapping_insert)
-static inline TLSF_TPL3 TLSF_MAPPING_INSERT(size_t nunits) {
+static inline unsigned int TLSF_MAPPING_INSERT(size_t nunits) {
   unsigned char f = TLSF_FLSHIFT - TLSF_CLZ((nunits - 1) | ((TLSF_SLDEPTH << 1) -1));
   unsigned char s = ((nunits - 1) >> (f?f:1)) & (TLSF_SLDEPTH - 1);
-  TLSF_TPL3 const x =  (TLSF_TPL3){ .fli = f, .sli = s, .ix = f * TLSF_SLDEPTH + s };
-  //printf("%s: units=%lu(0x%lx) fli=%d sli=%d ix=%d\n", __FUNCTION__,
-  //    nunits, nunits, x.fli, x.sli, x.ix);
-  return x;
+  return (f << TLSF_SLSHIFT) + s;
 }
 
 
@@ -226,7 +221,10 @@ typedef struct TLSF_ZONE {
 #  if defined(TLSF_EXTRA_ZONEDATA_T)
   TLSF_EXTRA_ZONEDATA_T extra;
 #  endif
+
+#  if (TLSF_SLSHIFT > 0)
   size_t flmap;
+#  endif
   uintptr_t slmap[
     (TLSF_SLMAPSIZE + sizeof(uintptr_t) * 8 - 1) / (sizeof(uintptr_t) * 8)];
   TLSF_UNIT_T *frees[TLSF_SLMAPSIZE];
@@ -256,17 +254,19 @@ static void TLSF_ADD_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
   TLSF_ASSERT(zone != NULL);
   TLSF_ASSERT((chunk[0].sz & TLSF_SIZET_MAGIC) == 0);
 
-  TLSF_TPL3 const x = TLSF_MAPPING_INSERT(chunk[0].sz);
+  unsigned int const ix = TLSF_MAPPING_INSERT(chunk[0].sz);
   chunk[0].sz |= TLSF_SIZET_MAGIC1;
-  TLSF_UNIT_T *nxt = zone->frees[x.ix];
+  TLSF_UNIT_T *nxt = zone->frees[ix];
   if (nxt == NULL) {
     chunk[2].ptr = chunk;
     chunk[3].ptr = chunk;
 
     // Mark bitmap as available.
     size_t const bw = sizeof(uintptr_t) * 8;
-    zone->slmap[x.ix / bw] |= (uintptr_t)1 << (x.ix % bw);
-    zone->flmap |= (size_t)1 << x.fli;
+    zone->slmap[ix / bw] |= (uintptr_t)1 << (ix % bw);
+#if (TLSF_SLSHIFT > 0)
+    zone->flmap |= (size_t)1 << (ix >> TLSF_SLSHIFT);
+#endif
   } else {
     TLSF_UNIT_T *prv = nxt[3].ptr;
     chunk[2].ptr = nxt;
@@ -274,7 +274,7 @@ static void TLSF_ADD_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
     nxt[3].ptr = chunk;
     prv[2].ptr = chunk;
   }
-  zone->frees[x.ix] = chunk;
+  zone->frees[ix] = chunk;
   //printf("%s: units=%lu ix=%lu flmap=%lx nxt=%p\n", __FUNCTION__,
   //    (chunk[0].sz & ~TLSF_SIZET_MAGIC), x.ix, zone->flmap, nxt);
 }
@@ -292,19 +292,21 @@ static void TLSF_REMOVE_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
   if (chunk[0].sz & TLSF_SIZET_MAGIC1) { // it's first chunk.
     chunk[0].sz &= ~TLSF_SIZET_MAGIC;
 
-    TLSF_TPL3 const x = TLSF_MAPPING_INSERT(chunk[0].sz);
-    TLSF_ASSERT(zone->frees[x.ix] == chunk);
+    unsigned int const ix = TLSF_MAPPING_INSERT(chunk[0].sz);
+    TLSF_ASSERT(zone->frees[ix] == chunk);
     if (chunk[2].ptr == chunk) { // to be empty.
-      zone->frees[x.ix] = NULL;
+      zone->frees[ix] = NULL;
 
       // Mark bitmap as unavalable.
       size_t const bw = sizeof(uintptr_t) * 8;
-      zone->slmap[x.ix / bw] &= ~((uintptr_t)1 << (x.ix % bw));
-      uintptr_t const msk = (((uintptr_t)1 << TLSF_SLSHIFT) - 1) << (x.sli * TLSF_SLDEPTH % bw);
-      if (! (zone->slmap[x.ix / bw] & msk))
-        zone->flmap &= ~((size_t)1 << x.fli);
+      zone->slmap[ix / bw] &= ~((uintptr_t)1 << (ix % bw));
+#if (TLSF_SLSHIFT > 0)
+      uintptr_t const msk = (((uintptr_t)1 << TLSF_SLSHIFT) - 1) << ((ix & ~(TLSF_SLDEPTH - 1)) % bw);
+      if (! (zone->slmap[ix / bw] & msk))
+        zone->flmap &= ~((size_t)1 << (ix >> TLSF_SLSHIFT));
+#endif
     } else {
-      zone->frees[x.ix] = chunk[2].ptr;
+      zone->frees[ix] = chunk[2].ptr;
       chunk[2].ptr[0].sz |= TLSF_SIZET_MAGIC1;
     }
   }
@@ -322,27 +324,34 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
   size_t nunits = (nbytes + sizeof(TLSF_UNIT_T) - 1) / sizeof(TLSF_UNIT_T);
   if (nunits < 2) nunits = 2; // Minimum allocation size is 2.
 
-  TLSF_TPL3 const x = ({
+  unsigned int const ix = ({
     unsigned char f = TLSF_FLSHIFT - TLSF_CLZ((nunits - 1) | ((TLSF_SLDEPTH << 1)- 1));
     TLSF_MAPPING_INSERT(nunits + (((size_t)1 << (f?f:1)) - 1)); });
 
   size_t const bw = sizeof(uintptr_t) * 8;
-  unsigned int const iy = TLSF_FFS(zone->slmap[x.ix / bw] & ((uintptr_t)-1 << (x.ix % bw)) );
+  unsigned int const iy = TLSF_FFS(zone->slmap[ix / bw] & ((uintptr_t)-1 << (ix % bw)) );
   TLSF_UNIT_T *p;
   if (iy) {
-    p = zone->frees[(x.ix & ~(bw - 1)) + iy - 1];
+    p = zone->frees[(ix & ~(bw - 1)) + iy - 1];
   } else {
-    unsigned char fli = TLSF_FFS(zone->flmap & ((size_t)-2 << x.fli));
-    if (fli == 0) // No enough memory.
+#if (TLSF_SLSHIFT > 0)
+    unsigned char fli = TLSF_FFS(zone->flmap & ((size_t)-2 << (ix >> TLSF_SLSHIFT)));
+    if (fli == 0) {
+      TLSF_WARN("%s: No space left. for %lu bytes", __FUNCTION__, nbytes);
       return NULL;
+    }
     --fli;
 
     TLSF_ASSERT(fli <= TLSF_FLSHIFT);
-    TLSF_ASSERT(fli > x.fli);
+    TLSF_ASSERT(fli > (ix >> TLSF_SLSHIFT));
 
     unsigned int const iz = TLSF_FFS(zone->slmap[fli * TLSF_SLDEPTH / bw]);
     TLSF_ASSERT(iz != 0);
     p = zone->frees[fli * TLSF_SLDEPTH + iz - 1];
+#else
+    TLSF_WARN("%s: No space left. for %lu bytes", __FUNCTION__, nbytes);
+    return NULL;
+#endif
   }
   //printf("%s: allocating %lu units from %lu.\n", __FUNCTION__, nunits, (p[0].sz & ~TLSF_SIZET_MAGIC));
 

@@ -51,9 +51,9 @@ describe(tlsf_show_configs, "Configuration.")
 
   it("just show configuration before any tests.")
     nanospec_printf(
-        "\n  > unit_size = %ld"
-        "\n  > zone_header_size = %ld"
-        "\n  > zone_extra_data_size = %ld"
+        "\n  > unit_size = %zu"
+        "\n  > zone_header_size = %zu"
+        "\n  > zone_extra_data_size = %zu"
         "\n  > fl_shift = %d"
         "\n  > sl_shift = %d"
         "\n  > machine_alignment = %d"

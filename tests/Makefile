@@ -6,13 +6,17 @@ tests: spec_tlsf_sl2 spec_tlsf_sl0
 	echo "# spec_tlsf_sl0" >> test.log
 	./spec_tlsf_sl0 | tee -a test.log
 
+clean:
+	rm -f spec_tlsf_sl2 spec_tlsf_sl0
+
 TLSF_DEPS:= spec_tlsf.c ../tlsf.c_inc nanocspec/nanocspec.h
+CFLAGS+= -O3 -g -Wall -ffunction-sections -fdata-sections -Wl,--gc-sections
 
 spec_tlsf_sl2: ${TLSF_DEPS}
-	$(CC) -DTEST_SL=2 -O3 -g -Wall --function-sections --data-sections -Wl,--gc-sections -o $@ $<
+	${CC} ${CFLAGS} -DTEST_SL=2 -o $@ $<
 
 spec_tlsf_sl0: ${TLSF_DEPS}
-	$(CC) -DTEST_SL=0 -O3 -g -Wall --function-sections --data-sections -Wl,--gc-sections -o $@ $<
+	${CC} ${CFLAGS} -DTEST_SL=0 -o $@ $<
 
 
 .PHONY: tests
