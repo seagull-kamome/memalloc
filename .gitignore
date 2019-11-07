@@ -2,7 +2,9 @@
 *.a
 *.obj
 *.exe
+*.log
 
-tests/spec_tlsf
+tests/spec_tlsf_sl2
+tests/spec_tlsf_sl0
 
 
