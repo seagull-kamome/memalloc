@@ -149,8 +149,8 @@ struct TLSF_CONFIG_TAG {
 /* Declaration section */
 #if defined(TLSF_DECL_ONLY) && TLSF_DECL_ONLY
 
-#  if defined(TLSF_API_PRIVATE) && TLSF_API_PRIVATE
-#    error "TLSF_DECL_ONLY and TLSF_API_PRIVATE conflicts."
+#  if defined(TLSF_PRIVATE_API)
+#    error "TLSF_DECL_ONLY and TLSF_PRIVATE_API conflicts."
 #  else
 
 #    if defined(__cplusplus)
@@ -198,12 +198,11 @@ extern "C" {
 #  else
 #    define TLSF_WARN(fmt, ...)  do { } while (0)
 #  endif
-#  if defined(TLSF_API_PRIVATE) && TLSF_API_PRIVATE
-#    define TLSF_API_STOAGE static
+#  if defined(TLSF_PRIVATE_API) && TLSF_PRIVATE_API
+#    define TLSF_API_STORAGE  static inline
 #  else
 #    define TLSF_API_STORAGE
 #  endif
-
 
 
 
@@ -246,7 +245,9 @@ typedef struct TLSF_ZONE {
 } *TLSF_ZONE_T;
 
 
-TLSF_API_STORAGE
+#  if defined(TLSF_PRIVATE_API) && TLSF_PRIVATE_API
+static
+#endif
 struct TLSF_CONFIG_TAG TLSF_CONFIG = {
   .unit_size = sizeof(TLSF_UNIT_T),
   .zone_header_size = sizeof(struct TLSF_ZONE),
@@ -441,7 +442,7 @@ size_t TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone) {
 
 
 
-TLSF_API_STORAGE inline
+TLSF_API_STORAGE
 TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
   assert(start != NULL);
   assert((uintptr_t)start <= (uintptr_t)(void*)-1 - nbytes);
