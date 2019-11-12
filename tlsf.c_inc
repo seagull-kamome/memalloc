@@ -32,6 +32,7 @@
  * #define TLSF_CLZ(x)    __builtin_clzl(x)
  * #define TLSF_SLSHIFT   (2)
  * #define TLSF_PREFIX    my_
+ * #define TLSF_CHECK_PARAM    (0)
  * // #define TLSF_DEBUG       (1)
  * // #define TLSF_WARN_HANDLER     printf
  * // #define TLSF_EXTRA_ZONEDATA_T  struct my_extra_data
@@ -116,6 +117,9 @@
  * @return Pointer to allocated space. Or NULL for exhausted.
  *
  * @fn void [PREFIX]tlsf_free(void *ptr, [PREFIX]tlsf_zone_t zone)
+ * @brief Free memory chunk.
+ * @param ptr  Pointer to chunk
+ * @param zone Zone handle
  *
  */
 
@@ -203,7 +207,13 @@ extern "C" {
 #  else
 #    define TLSF_API_STORAGE
 #  endif
-
+#  if defined(TLSF_CHECK_PARAM) && TLSF_CHECK_PARAM
+#    define TLSF_ASSERT_PARAM(x, y)   do { if (! (y)) return x; } while (0)
+#    define TLSF_ASSERT_PARAM_(y)   do { if (! (y)) return; } while (0)
+#  else
+#    define TLSF_ASSERT_PARAM(x, y)   do { assert(y); } while (0)
+#    define TLSF_ASSERT_PARAM_(y)   do { assert(y); } while (0)
+#  endif
 
 
 static_assert(sizeof(size_t) * 8 > 3, "well, ...you compilers broken.");
@@ -328,8 +338,8 @@ static inline void TLSF_REMOVE_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
 
 TLSF_API_STORAGE
 void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
-  assert(zone != NULL);
-  assert(nbytes > 0);
+  TLSF_ASSERT_PARAM(NULL, zone != NULL);
+  TLSF_ASSERT_PARAM(NULL, nbytes > 0);
 
   size_t nunits = (nbytes + sizeof(TLSF_UNIT_T) - 1) / sizeof(TLSF_UNIT_T);
   if (nunits < 2) nunits = 2; // Minimum allocation size is 2.
@@ -389,8 +399,8 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
 
 TLSF_API_STORAGE
 void TLSF_FREE(void *ptr, TLSF_ZONE_T zone) {
-  assert(zone != NULL);
-  assert(ptr != NULL);
+  TLSF_ASSERT_PARAM_(zone != NULL);
+  TLSF_ASSERT_PARAM_(ptr != NULL);
 
   TLSF_UNIT_T *p = (TLSF_UNIT_T*)ptr - 2;
   p[0].sz &= ~TLSF_SIZET_MAGIC0;
@@ -420,8 +430,8 @@ void TLSF_FREE(void *ptr, TLSF_ZONE_T zone) {
 
 TLSF_API_STORAGE
 size_t TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone) {
-  assert(start != NULL);
-  assert(zone != NULL);
+  TLSF_ASSERT_PARAM(0, (start != NULL));
+  TLSF_ASSERT_PARAM(0, (zone != NULL));
 
   uintptr_t tail = (uintptr_t)start + nbytes;
   TLSF_UNIT_T *p = (TLSF_UNIT_T*)(((uintptr_t)start + TLSF_UNIT_ALIGN - 1) & ~(TLSF_UNIT_ALIGN - 1));
@@ -444,8 +454,8 @@ size_t TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone) {
 
 TLSF_API_STORAGE
 TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
-  assert(start != NULL);
-  assert((uintptr_t)start <= (uintptr_t)(void*)-1 - nbytes);
+  TLSF_ASSERT_PARAM(NULL, (start != NULL));
+  TLSF_ASSERT_PARAM(NULL, ((uintptr_t)start <= (uintptr_t)(void*)-1 - nbytes) );
 
   uintptr_t tail = (uintptr_t)start + nbytes;
   TLSF_ZONE_T zone = (TLSF_ZONE_T)(((uintptr_t)start + TLSF_UNIT_ALIGN - 1) & ~(TLSF_UNIT_ALIGN - 1));

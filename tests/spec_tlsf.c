@@ -35,7 +35,8 @@ struct test_zonedata { unsigned int dummy; };
 #define TLSF_SLSHIFT   (TEST_SL)
 #define TLSF_PREFIX     my_
 #define TLSF_EXTRA_ZONEDATA_T struct test_zonedata
-#define TLSF_DEBUG     (1)
+#define TLSF_CHECK_PARAM (1)
+#define TLSF_DEBUG       (1)
 // #define TLSF_WARN_HANDLER nanospec_printf
 #include "../tlsf.c_inc"
 
@@ -119,7 +120,6 @@ describe(tlsf_alloc, "Allocate memory.")
     should_eq(NULL, my_tlsf_alloc(sizeof(blk_100k[0]), zone0) );
 
   it("returns NULL for zero-bytes.")
-    skip_it("it makes assertion fail.");
     should_eq(NULL, my_tlsf_alloc(0, zone0));
 
   it("might allocate too small size.")
@@ -143,6 +143,10 @@ describe(tlsf_free, "Free.")
   my_tlsf_add_block(blk_10k[1], sizeof(blk_10k[1]), zone0);
   my_tlsf_add_block(blk_100k[0], sizeof(blk_100k[0]), zone0);
   my_tlsf_add_block(blk_100k[1], sizeof(blk_100k[1]), zone0);
+
+  it("allows free NULL")
+    my_tlsf_free(NULL, zone0);
+    my_tlsf_free(zone0, NULL);
 
   it("may free memory")
     void *p = my_tlsf_alloc(1000, zone0);
