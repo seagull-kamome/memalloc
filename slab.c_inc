@@ -29,16 +29,15 @@
  *
  * ```` your_c_source.c
  * #define SLAB_ZONE_MALLOC
- * #define SLAB_ZONE_FREE
  * #define SLAB_PAGE_SHIFT
- * #define SLAB_PAGE_ALLOC
- * #define SLAB_PAGE_FREE
- * #define SLAB_EXTRA_ZONE_DATA_T
- * #define SLAB_NUM_CPUS
- * #define SLAB_GET_CPUID
- * // #define SLAB_API_PRIVATE        (1)
+ * #define SLAB_PAGE_FREE(pg)        (-1)
+ * // #define SLAB_PAGE_FREE(pg)        my_page_free(pg)
+ * // #define SLAB_PREFIX              my_
  * // #define SLAB_DEBUG              (!)
+ * // #define SLAB_EXTRA_ZONE_DATA_T
  * // #define NDEBUG                  (1)
+ * // #define SLAB_PAGE_ALLOC()       my_page_alloc(1)
+ * // #define SLAB_PRIVATE_API        (1)
  * #include "somewherepath/slab.c_inc"
  * ````
  *
@@ -56,24 +55,30 @@
 #define SLAB_FREE              SLAB_GLUE(slab_free)
 #define SLAB_ALLOC             SLAB_GLUE(slab_alloc)
 #define SLAB_CREATE_ZONE       SLAB_GLUE(slab_create_zone)
-#define SLAB_DESTROY_ZONE      SLAB_GLUE(slab_destroy_zone)
+//#define SLAB_DESTROY_ZONE      SLAB_GLUE(slab_destroy_zone)
+#define SLAB_ADD_PAGE          SLAB_GLUE(slab_add_page)
+
 
 
 
 /* ************************************************************************ */
 /* Declaration section */
 #if defined(SLAB_DECL_ONLY) && SLAB_DECL_ONLY
-#  if defined(SLAB_API_PRIVATE) && SLAB_API_PRIVATE
-#    error "SLAB_DECL_ONLY and SLAB_API_PRIVATE conflicts."
+#  if defined(SLAB_PRIVATE_API) && SLAB_PRIVATE_API
+#    error "SLAB_DECL_ONLY and SLAB_PRIVATE_API conflicts."
 #  else
 #    if defined(__cplusplus)
 extern "C" {
 #    endif
 
-SLAB_ZONE_T SLAB_CREATE_ZONE(uint8_t start, uint8_t step, uint8_t n);
-void SLAB_DESTROY_ZONE(SLAB_ZONE_T zone);
+
+struct SLAB_ZONE *SLAB_ZONE_T;
+SLAB_ZONE_T SLAB_CREATE_ZONE(uint8_t start, uint8_t step, uint8_t n,
+    uintptr_t pg, size_t npages);
+//void SLAB_DESTROY_ZONE(SLAB_ZONE_T zone);
 void *SLAB_ALLOC(size_t nbytes, SLAB_ZONE_T zone);
 void SLAB_FREE(void *ptr);
+void SLAB_ADD_PAGE(uintptr_t pg, unsigned int npages, SLAB_ZONE_T zone);
 
 
 #    if defined(__cplusplus)
@@ -83,8 +88,8 @@ void SLAB_FREE(void *ptr);
 #else
 /* ************************************************************************ */
 /* Implementation section */
-#include <stdint.h>
-#include <assert.h>
+#  include <stdint.h>
+#  include <assert.h>
 
 #  if defined(__cplusplus)
 extern "C" {
@@ -119,10 +124,7 @@ static_assert(SLAB_PAGE_SHIFT < sizeof(union SLAB_UNIT_T) * 8,
 
 
 // bin
-// | start | start + step * 1 | ... | start + step * (n - 1) | CPU0
-// | start | start + step * 1 | ... | start + step * (n - 1) | CPU1
-//     :
-// | start | start + step * 1 | ... | start + step * (n - 1) | CPUn
+// | start | start + step * 1 | ... | start + step * (n - 1) |
 //   |
 //  | Page header |       |      |      |      |
 //           v next_page
@@ -150,14 +152,14 @@ struct SLAB_PAGE_HDR_TAG {
 static_assert(((uintptr_t)((struct SLAB_PAGE_HDR_TAG*)NULL)->units & 3) == 0);
 
 
-typedef struct {
+typedef struct SLAB_ZONE {
 #  if defined(SLAB_EXTRA_ZONE_DATA_T)
   SLAB_EXTRA_ZONE_DATA_T extra;
 #  endif
   struct SLAB_PAGE_HDR_TAG *freepage;
 
   uint8_t bin_start;  // in SLAB_UNIT_T
-  uint8_t bin_num;;
+  uint8_t bin_num;
   uint8_t bin_step;   // in SLAB_UNIT_T
 
   struct SLAB_PAGE_HDR_TAG *bins[];
@@ -181,10 +183,10 @@ void SLAB_FREE(void *ptr, SLAB_ZONE_T zone) {
     nxtpg->prev_page = (void*)prvpg;
     if (zone->bins[pg->bin_ix] == pg) zone->bins[pg->bin_ix] = nxtpg;
 
-    if (zone->freepage == NULL)
-      zone->freepage = pg;
-    else
-      SLAB_PAGE_FREE(pg);
+    if (zone->freepage != NULL || SLAB_PAGE_FREE(pg)) {
+      pg->next_page = zone->free_page;
+      zone->free_page = pg->next_page;
+    }
   } else {
     ((union SLAB_UNIT_T*)ptr)->ptr = (union SLAB_UNIT_T*)((uintptr_t)pg | SLAB_PTR_OFS(pg->next_page));
 
@@ -216,15 +218,19 @@ void *SLAB_ALLOC(size_t nbytes, SLAB_ZONE_T zone) {
   if (n > zone->bin_start + zone->bin_step * (zone->bin_num - 1))
     return NULL;
 
-  unsigned int const bin_no = ((n < zone->bin_start)? 0
+  unsigned int const ix = ((n < zone->bin_start)? 0
          : (((n - zone->bin_start) + zone->bin_step - 1) / zone->bin_step) );
-  unsigned int const ix = SLAB_GET_CPUID() * zone->bin_num + bin_no;
   unsigned int const bin_sz = zone->bin_start + zone->bin_step * bin_no;
 
   struct SLAB_PAGE_HDR_TAG *pg = zone->bins[ix];
   if (pg == NULL) {
     if (zone->freepage == NULL) {
+#if defined(SLAB_PAGE_ALLOC)
       pg = (struct SLAB_PAGE_HDR_TAG*)SLAB_PAGE_ALLOC();
+      if (pg == NULL) return NULL;
+#else
+      return NULL;
+#endif
     } else {
       pg = zone->freepage;
       zone->freepage = pg->next_page;
@@ -263,26 +269,62 @@ SLAB_ZONE_T SLAB_CREATE_ZONE(uint8_t start, uint8_t step, uint8_t n) {
   assert(step > 0);
   assert(n > 0);
 
-  unsigned int m = n * SLAB_NUM_CPUS;
   SLAB_ZONE_T zone = SLAB_ZONE_MALLOC(
       sizeof(*(SLAB_ZONE_T)NULL)
-      + sizeof(struct SLAB_PAGE_HDR_TAG*) * m);
+      + sizeof(struct SLAB_PAGE_HDR_TAG*) * n);
   if (zone == NULL) return NULL;
 
   zone->freepage = NULL;
   zone->bin_start = start;
   zone->bin_step = step;
   zone->bin_num = n;
-  for (unsigned int i = 0; i < m; ++i)
+  for (unsigned int i = 0; i < n; ++i)
     zone->bins[i] = NULL;
 
   return zone;
 }
 
+
+
+
+SLAB_API_STORAGE
+void SLAB_ADD_PAGE(uintptr_t pg, unsigned int npages, SLAB_ZONE_T zone) {
+  assert((pg & ~SLAB_PAGE_MASK) == 0);
+  assert(npages >= 1);
+
+  do {
+    struct SLAB_PAGE_HDR_TAG *p = (struct SLAB_PAGE_HDR_TAG*)pg;
+    p->next_page = zone->freepage;
+    zone->freepage = p;
+    pg += SLAB_PAGE_SIZE;
+  } while (--npages);
+}
+
+
+
+
 #  if defined(__cplusplus)
 }
 #  endif
+
+#undef SLAB_PTR_BITS
+#undef SLAB_PAGE_SIZE
+#undef SLAB_PAGE_MARSK
+#undef SLAB_PTR_PAGE
+#undef SLAB_PTR_OFS
+#undef SLAB_ASSERT
+#undef SLAB_API_STORAGE
+
 #endif
+
+#undef SLAB_GLUE3
+#undef SLAB_GLUE2
+#undef SLAB_GLUE
+#undef SLAB_ZONE
+#undef SLAB_ZONE_T
+#undef SLAB_FREE
+#undef SLAB_ALLOC
+#undef SLAB_CREATE_ZONE
 
 
 
