@@ -1,0 +1,145 @@
+/**
+ * @file
+ * @brief Implementation of BUDDY memory allocation algorithm.
+ * @section LICENSE
+ *
+ * MIT License
+ *
+ * Copyright (c) 2019 Hattori, Hiroki
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ * @section Usage
+ *
+ * ```` your_c_source.c
+ * #define BUDDY_PAGE_SHIFT             (12)
+ * #define BUDDY_LINES                  (5)
+ * // #define BUDDY_PREFIX              my_
+ * // #define BUDDY_DEBUG              (!)
+ * // #define BUDDY_EXTRA_ZONE_DATA_T
+ * // #define NDEBUG                  (1)
+ * // #define BUDDY_PRIVATE_API        (1)
+ * #include "somewherepath/slab.c_inc"
+ * ````
+ *
+ */
+#include <stddef.h>
+
+#define BUDDY_GLUE2(x, y)       x##y
+#define BUDDY_GLUE3(x, y)       BUDDY_GLUE2(x, y)
+#define BUDDY_GLUE(x)           BUDDY_GLUE3(BUDDY_PREFIX, x)
+
+#define BUDDY_ZONE              SLAB_GLUE(buddy_zone)
+#define BUDDY_ZONE_T            SLAB_GLUE(buddy_zone_t)
+#define BUDDY_FREE              SLAB_GLUE(buddy_free)
+#define BUDDY_ALLOC             SLAB_GLUE(buddy_alloc)
+#define BUDDY_CREATE_ZONE       SLAB_GLUE(buddy_create_zone)
+#define BUDDY_ADD_PAGE          SLAB_GLUE(buddy_add_page)
+
+
+
+
+
+
+/* ************************************************************************ */
+/* Declaration section */
+#if defined(BUDDY_DECL_ONLY) && BUDDY_DECL_ONLY
+#  if defined(BUDDY_PRIVATE_API) && BUDDY_PRIVATE_API
+#    error "BUDDY_DECL_ONLY and BUDDY_PRIVATE_API conflicts."
+#  else
+#    if defined(__cplusplus)
+extern "C" {
+#    endif
+
+struct BUDDY_PAGE_HDR_TAG;
+typedef struct BUDDY_ZONE {
+  uintptr_t page_offset;
+  struct BUDDY_PAGE_HDR_TAG *pages[BUDDY_LINES];
+} BUDDY_ZONE_T;
+
+#define BUDDY_ZONE_INITIALIZER(pgofs) { \
+  .page_offset = (pgofs), \
+  .pages = { NULL, }, }
+
+void BUDDY_CREATE_ZONE(uintptr_t page_offset, BUDDY_ZONE_T zone);
+int BUDDY_ADD_PAGE(void *ptr, size_t npages, BUDDY_ZONE_T zone);
+void *BUDDY_ALLOCATE(uint8_t order, BUDDY_ZONE_T zone);
+void BUDDY_FREE(void* ptr, uint8_t order, BUDDY_ZONE_T zone);
+
+
+
+#    if defined(__cplusplus)
+}
+#    endif
+#  endif
+#else
+/* ************************************************************************ */
+/* Implementation section */
+#  include <stdint.h>
+#  include <assert.h>
+
+#  define BUDDY_PAGE_MASK       (((uintptr_t)1 << BUDDY_PAGE_SHIFT) - 1)
+
+
+#  if defined(__cplusplus)
+extern "C" {
+#  endif
+
+struct BUDDY_PAGE_HDR_TAG {
+  struct BUDDY_PAGE_HDR_TAG *next;
+};
+
+
+
+void *BUDDY_FREE(void *ptr, uint8_t order, BUDDY_ZONE_T zone) {
+}
+
+
+
+void *BUDDY_ALLOCATE(uint8_t order, BUDDY_ZONE_T zone) {
+}
+
+int BUDDY_ADD_PAGE(void* ptr, size_t npages, BUDDY_ZONE_T zone) {
+
+}
+
+
+
+BUDDY_API_STORAGE
+void inline BUDDY_CREATE_ZONE(uintptr_t page_offset, BUDDY_ZONE_T zone) {
+  assert(zone != NULL);
+  zone->page_offset = page_offset;
+  for (unsigned int i = 0; i < BUDDY_LINES; ++ i)
+    zone->pages = NULL;
+}
+
+
+
+uintptr_t BUDDY_ALLOCATE(size_t npages);
+void BUDDY_FREE(void* ptr, size_t npages);
+
+
+
+#  if defined(__cplusplus)
+}
+#  endif
+#endif
+
+
+// vim: ts=8 sw=2 filetype=c cindent expandtab :
