@@ -43,8 +43,8 @@
  *
  */
 #include <stddef.h>
-
-
+#include <stdint.h>
+#include <assert.h>
 
 #define SLAB_GLUE2(x, y)       x##y
 #define SLAB_GLUE3(x, y)       SLAB_GLUE2(x, y)
@@ -58,18 +58,11 @@
 //#define SLAB_DESTROY_ZONE      SLAB_GLUE(slab_destroy_zone)
 #define SLAB_ADD_PAGE          SLAB_GLUE(slab_add_page)
 
+static_assert((uintptr_t)NULL == (uintptr_t)0, "Assuming NULL==0.");
 
-
-
-/* ************************************************************************ */
-/* Declaration section */
-#if defined(SLAB_DECL_ONLY) && SLAB_DECL_ONLY
-#  if defined(SLAB_PRIVATE_API) && SLAB_PRIVATE_API
-#    error "SLAB_DECL_ONLY and SLAB_PRIVATE_API conflicts."
-#  else
-#    if defined(__cplusplus)
+#if defined(__cplusplus)
 extern "C" {
-#    endif
+#endif
 
 
 struct SLAB_ZONE *SLAB_ZONE_T;
@@ -81,20 +74,13 @@ void SLAB_FREE(void *ptr);
 void SLAB_ADD_PAGE(uintptr_t pg, unsigned int npages, SLAB_ZONE_T zone);
 
 
-#    if defined(__cplusplus)
-}
-#    endif
+
+/* ************************************************************************ */
+#if defined(SLAB_DECL_ONLY) && SLAB_DECL_ONLY
+#  if defined(SLAB_PRIVATE_API && SLAB_PRIVATE_API
+#    error "TLSF_DECL_ONLY and TLSF_PRIVATE_API conflict."
 #  endif
 #else
-/* ************************************************************************ */
-/* Implementation section */
-#  include <stdint.h>
-#  include <assert.h>
-
-#  if defined(__cplusplus)
-extern "C" {
-#  endif
-
 
 #  define SLAB_PTR_BITS    (sizeof(void*) * 8)
 #  define SLAB_PAGE_SIZE   ((size_t)1 << SLAB_PAGE_SHIFT)
@@ -113,8 +99,6 @@ extern "C" {
 #  endif
 
 
-
-static_assert((uintptr_t)NULL == (uintptr_t)0, "Assuming NULL==0.");
 
 #  define SLAB_UNIT_T  SLAB_GLUE(slab_unit_t)
 union SLAB_UNIT_T { size_t sz; union SLAB_UNIT_T* ptr; };
@@ -301,12 +285,6 @@ void SLAB_ADD_PAGE(uintptr_t pg, unsigned int npages, SLAB_ZONE_T zone) {
 }
 
 
-
-
-#  if defined(__cplusplus)
-}
-#  endif
-
 #undef SLAB_PTR_BITS
 #undef SLAB_PAGE_SIZE
 #undef SLAB_PAGE_MARSK
@@ -316,6 +294,11 @@ void SLAB_ADD_PAGE(uintptr_t pg, unsigned int npages, SLAB_ZONE_T zone) {
 #undef SLAB_API_STORAGE
 
 #endif
+
+
+#  if defined(__cplusplus)
+}
+#  endif
 
 #undef SLAB_GLUE3
 #undef SLAB_GLUE2

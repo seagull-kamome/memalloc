@@ -10,7 +10,8 @@ clean:
 	rm -f spec_tlsf_sl2 spec_tlsf_sl0
 
 TLSF_DEPS:= spec_tlsf.c ../tlsf.c_inc nanocspec/nanocspec.h
-CFLAGS+= -O3 -g -Wall -ffunction-sections -fdata-sections -Wl,--gc-sections
+CFLAGS+= --std=gnu1x -O3 -g -Wall \
+	 -ffunction-sections -fdata-sections -Wl,--gc-sections
 
 spec_tlsf_sl2: ${TLSF_DEPS}
 	${CC} ${CFLAGS} -DTEST_SL=2 -o $@ $<

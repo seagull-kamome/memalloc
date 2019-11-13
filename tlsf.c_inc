@@ -124,6 +124,8 @@
  */
 
 #include <stddef.h>
+#include <stdint.h>
+#include <assert.h>
 
 
 #define TLSF_GLUE2(x, y)       x##y
@@ -139,54 +141,62 @@
 #define TLSF_CONFIG            TLSF_GLUE(tlsf_config)
 #define TLSF_CONFIG_TAG        TLSF_GLUE(tlsf_config_tag)
 
+#if defined(TLSF_PRIVATE_API) && TLSF_PRIVATE_API
+#  define TLSF_API  static inline
+#else
+#  define TLSF_API
+#endif
+
+
+#define TLSF_SLDEPTH  (1 << TLSF_SLSHIFT)
+static_assert(sizeof(size_t) * 8 > 3, "well, ...you compilers broken.");
+static_assert(sizeof(uintptr_t) * 8 >= 32 && sizeof(uintptr_t) < 256, "wha...");
+static_assert(TLSF_SLSHIFT >= 0
+           && TLSF_SLSHIFT < sizeof(size_t) * 8 - 2, "Bad TLSF_SLSHIFT");
+static_assert(TLSF_SLSHIFT == 0 || sizeof(uintptr_t) * 8 % TLSF_SLDEPTH == 0,
+    "Unsupported case.");
+
+
+
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 struct TLSF_CONFIG_TAG {
   size_t unit_size;
   size_t zone_header_size;
   size_t zone_extra_data_size;
-  unsigned char fl_shift;
-  unsigned char sl_shift;
-  unsigned char machine_alignment;
+  uint8_t fl_shift;
+  uint8_t sl_shift;
+  uint8_t machine_alignment;
 };
 
 
-/* ************************************************************************ */
-/* Declaration section */
-#if defined(TLSF_DECL_ONLY) && TLSF_DECL_ONLY
+typedef struct TLSF_ZONE *TLSF_ZONE_T;
+TLSF_API void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone);
+TLSF_API void TLSF_FREE(void *ptr, TLSF_ZONE_T zone);
+TLSF_API size_t TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone);
+TLSF_API TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes);
 
-#  if defined(TLSF_PRIVATE_API)
-#    error "TLSF_DECL_ONLY and TLSF_PRIVATE_API conflicts."
-#  else
-
-#    if defined(__cplusplus)
-extern "C" {
-#    endif
-
-
-typedef struct TLSF_ZONE TLSF_ZONE_T;
-void *TLSF_ALLOC(void *start, size_t nbytes, TLSF_ZONE_T zone);
-void TLSF_FREE(void *ptr, TLSF_ZONE_T zone);
-int TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone);
-TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes);
-
+#if defined(TLSF_PRIVATE_API) && TLSF_PRIVATE_API
+#else
 extern struct TLSF_CONFIG_TAG TLSF_CONFIG;
+#endif
 
-#    if defined(__cplusplus)
-}
-#    endif
+
+
+
+/* ************************************************************************ */
+#if defined(TLSF_DECL_ONLY) && TLSF_DECL_ONLY
+#  if defined(TLSF_PRIVATE_API && TLSF_PRIVATE_API
+#    error "TLSF_DECL_ONLY and TLSF_PRIVATE_API conflict."
 #  endif
 #else
-/* ************************************************************************ */
-/* Implementation section */
-#  include <stdint.h>
 #  include <memory.h>
-#  include <assert.h>
 
-#  if defined(__cplusplus)
-extern "C" {
-#  endif
 
 #  define TLSF_FLSHIFT  (sizeof(size_t) * 8 - TLSF_SLSHIFT - 1)
-#  define TLSF_SLDEPTH  (1 << TLSF_SLSHIFT)
 #  define TLSF_SLMAPSIZE   ((TLSF_FLSHIFT - ((TLSF_UNIT_ALIGN==4)?2:(TLSF_UNIT_ALIGN==8)?3:0)) * TLSF_SLDEPTH)
 #  define TLSF_SIZET_MAGIC0 ((size_t)1 << (sizeof(size_t) * 8 - 1))
 #  define TLSF_SIZET_MAGIC1 ((size_t)1 << (sizeof(size_t) * 8 - 2))
@@ -202,11 +212,6 @@ extern "C" {
 #  else
 #    define TLSF_WARN(fmt, ...)  do { } while (0)
 #  endif
-#  if defined(TLSF_PRIVATE_API) && TLSF_PRIVATE_API
-#    define TLSF_API_STORAGE  static inline
-#  else
-#    define TLSF_API_STORAGE
-#  endif
 #  if defined(TLSF_CHECK_PARAM) && TLSF_CHECK_PARAM
 #    define TLSF_ASSERT_PARAM(x, y)   do { if (! (y)) return x; } while (0)
 #    define TLSF_ASSERT_PARAM_(y)   do { if (! (y)) return; } while (0)
@@ -215,12 +220,6 @@ extern "C" {
 #    define TLSF_ASSERT_PARAM_(y)   do { assert(y); } while (0)
 #  endif
 
-
-static_assert(sizeof(size_t) * 8 > 3, "well, ...you compilers broken.");
-static_assert(TLSF_SLSHIFT >= 0
-           && TLSF_SLSHIFT < sizeof(size_t) * 8 - 2, "Bad TLSF_SLSHIFT");
-static_assert(TLSF_SLSHIFT == 0 || sizeof(uintptr_t) * 8 % TLSF_SLDEPTH == 0,
-    "Unsupported case.");
 
 
 #  define TLSF_UNIT_T   union TLSF_PREFIX##tlsf_unit
@@ -232,8 +231,8 @@ static_assert(sizeof(TLSF_UNIT_T) >= 4, "No magic space of size_t.");
 
 #  define TLSF_MAPPING_INSERT   TLSF_GLUE(tlsf_mapping_insert)
 static inline unsigned int TLSF_MAPPING_INSERT(size_t nunits) {
-  unsigned char f = TLSF_FLSHIFT - TLSF_CLZ((nunits - 1) | ((TLSF_SLDEPTH << 1) -1));
-  unsigned char s = ((nunits - 1) >> (f?f:1)) & (TLSF_SLDEPTH - 1);
+  uint8_t f = TLSF_FLSHIFT - TLSF_CLZ((nunits - 1) | ((TLSF_SLDEPTH << 1) -1));
+  uint8_t s = ((nunits - 1) >> (f?f:1)) & (TLSF_SLDEPTH - 1);
   return (f << TLSF_SLSHIFT) + s;
 }
 
@@ -336,7 +335,7 @@ static inline void TLSF_REMOVE_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
 
 
 
-TLSF_API_STORAGE
+TLSF_API
 void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
   TLSF_ASSERT_PARAM(NULL, zone != NULL);
   TLSF_ASSERT_PARAM(NULL, nbytes > 0);
@@ -345,7 +344,7 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
   if (nunits < 2) nunits = 2; // Minimum allocation size is 2.
 
   unsigned int const ix = ({
-    unsigned char f = TLSF_FLSHIFT - TLSF_CLZ((nunits - 1) | ((TLSF_SLDEPTH << 1)- 1));
+    uint8_t f = TLSF_FLSHIFT - TLSF_CLZ((nunits - 1) | ((TLSF_SLDEPTH << 1)- 1));
     TLSF_MAPPING_INSERT(nunits + (((size_t)1 << (f?f:1)) - 1)); });
 
   unsigned int const iy = TLSF_FFS(zone->slmap[ix / TLSF_BMPW] & ((uintptr_t)-1 << (ix % TLSF_BMPW)) );
@@ -354,7 +353,7 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
     p = zone->frees[(ix & ~(TLSF_BMPW - 1)) + iy - 1];
   } else {
 #if (TLSF_SLSHIFT > 0)
-    unsigned char fli = TLSF_FFS(zone->flmap & ((size_t)-2 << (ix >> TLSF_SLSHIFT)));
+    uint8_t fli = TLSF_FFS(zone->flmap & ((size_t)-2 << (ix >> TLSF_SLSHIFT)));
     if (fli == 0) {
       TLSF_WARN("%s: No space left. for %lu bytes", __FUNCTION__, nbytes);
       return NULL;
@@ -397,7 +396,7 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
 
 
 
-TLSF_API_STORAGE
+TLSF_API
 void TLSF_FREE(void *ptr, TLSF_ZONE_T zone) {
   TLSF_ASSERT_PARAM_(zone != NULL);
   TLSF_ASSERT_PARAM_(ptr != NULL);
@@ -428,7 +427,7 @@ void TLSF_FREE(void *ptr, TLSF_ZONE_T zone) {
 
 
 
-TLSF_API_STORAGE
+TLSF_API
 size_t TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone) {
   TLSF_ASSERT_PARAM(0, (start != NULL));
   TLSF_ASSERT_PARAM(0, (zone != NULL));
@@ -452,7 +451,7 @@ size_t TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone) {
 
 
 
-TLSF_API_STORAGE
+TLSF_API
 TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
   TLSF_ASSERT_PARAM(NULL, (start != NULL));
   TLSF_ASSERT_PARAM(NULL, ((uintptr_t)start <= (uintptr_t)(void*)-1 - nbytes) );
@@ -479,14 +478,12 @@ TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
 
 
 #  undef TLSF_FLSHIFT
-#  undef TLSF_SLDEPTH
 #  undef TLSF_SLMAPSIZE
 #  undef TLSF_SIZET_MAGIC0
 #  undef TLSF_SIZET_MAGIC1
 #  undef TLSF_SIZET_MAGIC
 #  undef TLSF_ASSERT
 #  undef TLSF_WARN
-#  undef TLSF_API_STORAGE
 #  undef TLSF_UNIT_T
 #  undef TLSF_UNIT_ALIGN
 
@@ -494,12 +491,16 @@ TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
 #  undef TLSF_ADD_CHUNK
 #  undef TLSF_REMOVE_CHUNK
 
-#  if defined(__cplusplus)
-}
-#  endif
 #endif
 
 
+#if defined(__cplusplus)
+}
+#endif
+
+
+#undef TLSF_API
+#undef TLSF_SLDEPTH
 #undef TLSF_ZONE
 #undef TLSF_ZONE_T
 #undef TLSF_FREE
