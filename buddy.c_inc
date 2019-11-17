@@ -30,6 +30,8 @@
  * ```` your_c_source.c
  * #define BUDDY_PAGE_SHIFT             (12)
  * #define BUDDY_LINES                  (5)
+ * #define BUDDY_WARN_HANDLER(fmt,...)  do { } while (0)
+ * #define BUDDY_NOMEMORY_HANDLER       (-1)
  * // #define BUDDY_PREFIX              my_
  * // #define BUDDY_DEBUG              (!)
  * // #define BUDDY_EXTRA_ZONE_DATA_T
@@ -52,94 +54,164 @@
 #define BUDDY_CREATE_ZONE       SLAB_GLUE(buddy_create_zone)
 #define BUDDY_ADD_PAGE          SLAB_GLUE(buddy_add_page)
 
-
-
-
-
-
-/* ************************************************************************ */
-/* Declaration section */
-#if defined(BUDDY_DECL_ONLY) && BUDDY_DECL_ONLY
 #  if defined(BUDDY_PRIVATE_API) && BUDDY_PRIVATE_API
-#    error "BUDDY_DECL_ONLY and BUDDY_PRIVATE_API conflicts."
+#    define BUDDY_API  static inline
 #  else
-#    if defined(__cplusplus)
+#    define BUDDY_API
+#  endif
+
+
+
+static_assert(sizeof(void*) * 8 > BUDDY_PAGE_SHIFT,
+    "Too bit BUDDY_PAGE_SHIFT");
+static_assert(BUDDY_LINES < 256 && BUDDY_LINES < BUDDY_PAGE_SHIFT,
+    "Too big BUDDY_LINES");
+
+
+#if defined(__cplusplus)
 extern "C" {
-#    endif
+#endif
 
 struct BUDDY_PAGE_HDR_TAG;
 typedef struct BUDDY_ZONE {
   uintptr_t page_offset;
-  struct BUDDY_PAGE_HDR_TAG *pages[BUDDY_LINES];
+  struct BUDDY_PAGE_HDR_TAG *bin[BUDDY_LINES];
 } BUDDY_ZONE_T;
 
 #define BUDDY_ZONE_INITIALIZER(pgofs) { \
   .page_offset = (pgofs), \
-  .pages = { NULL, }, }
+  .bin = { NULL, }, }
 
-void BUDDY_CREATE_ZONE(uintptr_t page_offset, BUDDY_ZONE_T zone);
-int BUDDY_ADD_PAGE(void *ptr, size_t npages, BUDDY_ZONE_T zone);
-void *BUDDY_ALLOCATE(uint8_t order, BUDDY_ZONE_T zone);
-void BUDDY_FREE(void* ptr, uint8_t order, BUDDY_ZONE_T zone);
+BUDDY_API void BUDDY_CREATE_ZONE(uintptr_t page_offset, BUDDY_ZONE_T zone);
+BUDDY_API int BUDDY_ADD_PAGE(uintptr_t pg, unsigned int npages, BUDDY_ZONE_T zone);
+BUDDY_API uintptr_t BUDDY_ALLOCATE(uint8_t order, BUDDY_ZONE_T zone);
+BUDDY_API void BUDDY_FREE(uintptr_t pg, uint8_t order, BUDDY_ZONE_T zone);
 
 
 
-#    if defined(__cplusplus)
-}
-#    endif
+/* ************************************************************************ */
+#if defined(BUDDY_DECL_ONLY) && BUDDY_DECL_ONLY
+#  if defined(BUDDY_PRIVATE_API && BUDDY_PRIVATE_API
+#    error "BUDDY_DECL_ONLY and BUDDY_PRIVATE_API conflict."
 #  endif
 #else
-/* ************************************************************************ */
-/* Implementation section */
+
+
 #  include <stdint.h>
 #  include <assert.h>
 
 #  define BUDDY_PAGE_MASK       (((uintptr_t)1 << BUDDY_PAGE_SHIFT) - 1)
+#  define BUDDY_PAGE_SIZE       (((uintptr_t)1 << BUDDY_PAGE_SHIFT))
 
-
-#  if defined(__cplusplus)
-extern "C" {
-#  endif
 
 struct BUDDY_PAGE_HDR_TAG {
   struct BUDDY_PAGE_HDR_TAG *next;
 };
 
 
+BUDDY_API
+void BUDDY_FREE(uintptr_t pg, uint8_t order, BUDDY_ZONE_T zone) {
+  assert((pg & BUDDY_PAGE_MASK) == 0);
+  assert(pg >= zone->page_offset);
+  assert(zone != NULL);
+  assert(order < BUDDY_LINES);
 
-void *BUDDY_FREE(void *ptr, uint8_t order, BUDDY_ZONE_T zone) {
+  uintptr_t algn = (uintptr_t)1 << (BUDDY_PAGE_SHIFT + order - 1);
+retry:
+  struct BUDDY_PAGE_HDR_TAG **p = zone->bin + order++;
+  struct BUDDY_PAGE_HDR_TAG **q = NULL;
+  while (*p != NULL && (uintptr_t)*p < pg) { q = p; p = &(*p)->next; }
+  if (order < BUDDY_PAGE_LINES) {
+    uintptr_t const x = pg - zone->page_offset;
+    align <<= 1;
+    if (x & align) {
+      if (q && (((uintptr_t)p - zone->page_offset) | align) == x) {
+        *q = *p;
+        pg = (uintptr_t)p;
+        goto retry;
+      }
+    } else {
+      if (*p && (x | align) == (uintptr_t)*p - zone->page_offset) {
+        pg = (uintptr_t)*p;
+        *p = *p->next;
+        goto retry;
+      }
+    }
+  }
+  struct BUDDY_PAGE_HDR_TAG *pp = (struct BUDDY_PAGE_HDR_TAG*)pg;
+  pp->next = *p;
+  *p = pp;
+}
+
+
+BUDDY_API
+uintptr_t BUDDY_ALLOCATE(uint8_t order, BUDDY_ZONE_T zone) {
+  assert(order < BUDDY_LINES);
+  assert(zone != NULL);
+
+retry:
+  uint8_t oo = order;
+  while (oo < BUDDY_LINES && zone->bins[oo] == NULL) ++oo;
+  if (oo >= BUDDY_LINES) {
+    BUDDY_WARN_HANDLER("no space left for zone(%p).", zone);
+    if (BUDDY_NOMEMORY_HANDLER(zone) >= 0) goto retry;
+    return (uintptr_t)NULL;
+  }
+
+  uintptr_t const pg = (uintptr_t)zone->bins[oo];
+  zone->bins[oo] = zone->bins[oo]->next;
+  while (oo-- > order)
+    BUDDY_FREE(pg + (1 << (BUDDY_PAGE_SHIFT + oo)), oo, zone);
+
+  return pg;
 }
 
 
 
-void *BUDDY_ALLOCATE(uint8_t order, BUDDY_ZONE_T zone) {
+
+BUDDY_API
+int BUDDY_ADD_PAGE(uintptr_t pg, unsigned int npages, BUDDY_ZONE_T zone) {
+  assert((pg & BUDDY_PAGE_MASK) == 0);
+  assert(pg >= zone->page_offset);
+  assert(zone != NULL);
+
+  do {
+    BUDDY_FREE((void*)pg, 0, zone);
+    pg += BUDDY_PAGE_SIZE;
+  } while (--npages);
+
+  return 0;
 }
 
-int BUDDY_ADD_PAGE(void* ptr, size_t npages, BUDDY_ZONE_T zone) {
-
-}
 
 
-
-BUDDY_API_STORAGE
+BUDDY_API
 void inline BUDDY_CREATE_ZONE(uintptr_t page_offset, BUDDY_ZONE_T zone) {
   assert(zone != NULL);
   zone->page_offset = page_offset;
   for (unsigned int i = 0; i < BUDDY_LINES; ++ i)
-    zone->pages = NULL;
+    zone->bin[i] = NULL;
 }
 
 
-
-uintptr_t BUDDY_ALLOCATE(size_t npages);
-void BUDDY_FREE(void* ptr, size_t npages);
-
-
-
-#  if defined(__cplusplus)
-}
+#  undef BUDDY_WARN
+#  undef BUDDY_PAGE_MASK
+#  undef BUDDY_PAGE_SIZE
 #  endif
+
+#if defined(__cplusplus)
+}
 #endif
 
+#undef BUDDY_API
+#undef BUDDY_GLUE3
+#undef BUDDY_GLUE2
+#undef BUDDY_GLUE2
+#undef BUDDY_ZONE
+#undef BUDDY_ZONE_T
+#undef BUDDY_FREE
+#undef BUDDY_ALLOC
+#undef BUDDY_CREATE_ZONE
+#undef BUDDY_ADD_PAGE
 
 // vim: ts=8 sw=2 filetype=c cindent expandtab :

@@ -1,13 +1,16 @@
 
+TESTS=spec_tlsf_sl2 spec_tlsf_sl0 spec_slab
 
-tests: spec_tlsf_sl2 spec_tlsf_sl0
-	echo "# spec_tlsf_sl2" > test.log
-	./spec_tlsf_sl2 | tee -a test.log
-	echo "# spec_tlsf_sl0" >> test.log
-	./spec_tlsf_sl0 | tee -a test.log
+tests: ${TESTS}
+	rm test.log
+	for i in ${TESTS}; do \
+	  echo "# $$i" | tee -a test.log; \
+	  ./$$i | tee -a test.log; \
+	done
+
 
 clean:
-	rm -f spec_tlsf_sl2 spec_tlsf_sl0
+	rm -f ${TESTS}
 
 TLSF_DEPS:= spec_tlsf.c ../tlsf.c_inc nanocspec/nanocspec.h
 CFLAGS+= --std=gnu1x -O3 -g -Wall \

@@ -33,8 +33,8 @@
  * #define TLSF_SLSHIFT   (2)
  * #define TLSF_PREFIX    my_
  * #define TLSF_CHECK_PARAM    (0)
- * // #define TLSF_DEBUG       (1)
- * // #define TLSF_WARN_HANDLER     printf
+ * #define TLSF_WARN_HANDLER do { } while (0)
+ * #define TLSF_ASSERT       do { } while (0)
  * // #define TLSF_EXTRA_ZONEDATA_T  struct my_extra_data
  * // #define NDEBUG         (1)
  * // #define TLSF_PRIVATE_API (1)
@@ -68,14 +68,13 @@
  *
  *   Custom prefix of function and types.
  *
- * - TLSF_DEBUG
+ * - TLSF_ASSERT
  *
- *   Define (1) to enable internal debugging code. 0 or undefine to disable.
+ *   assert() macro for check internal bugs.
  *
  * - TLSF_WARN_HANDLER(fmt, ...)
  *
  *   Warnning message handler for non-fatal error case.
- *   undefine to supress it.
  *
  * - TLSF_EXTRA_ZONEDATA_T
  *
@@ -202,16 +201,6 @@ extern struct TLSF_CONFIG_TAG TLSF_CONFIG;
 #  define TLSF_SIZET_MAGIC1 ((size_t)1 << (sizeof(size_t) * 8 - 2))
 #  define TLSF_SIZET_MAGIC  ((size_t)3 << (sizeof(size_t) * 8 - 2))
 #  define TLSF_BMPW     (sizeof(uintptr_t) * 8)
-#  if defined(TLSF_DEBUG) && TLSF_DEBUG
-#    define TLSF_ASSERT(x)   do { assert(x); } while (0)
-#  else
-#    define TLSF_ASSERT      do { } while (0)
-#  endif
-#  if defined(TLSF_WARN_HANDLER)
-#    define TLSF_WARN(fmt, ...)  do { TLSF_WARN_HANDLER(fmt, __VA_ARGS__); } while (0)
-#  else
-#    define TLSF_WARN(fmt, ...)  do { } while (0)
-#  endif
 #  if defined(TLSF_CHECK_PARAM) && TLSF_CHECK_PARAM
 #    define TLSF_ASSERT_PARAM(x, y)   do { if (! (y)) return x; } while (0)
 #    define TLSF_ASSERT_PARAM_(y)   do { if (! (y)) return; } while (0)
@@ -355,7 +344,7 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
 #if (TLSF_SLSHIFT > 0)
     uint8_t fli = TLSF_FFS(zone->flmap & ((size_t)-2 << (ix >> TLSF_SLSHIFT)));
     if (fli == 0) {
-      TLSF_WARN("%s: No space left. for %lu bytes", __FUNCTION__, nbytes);
+      TLSF_WARN_HANDLER("%s: No space left. for %lu bytes", __FUNCTION__, nbytes);
       return NULL;
     }
     --fli;
@@ -367,7 +356,7 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
     TLSF_ASSERT(iz != 0);
     p = zone->frees[fli * TLSF_SLDEPTH + iz - 1];
 #else
-    TLSF_WARN("%s: No space left. for %lu bytes", __FUNCTION__, nbytes);
+    TLSF_WARN_HANDLER("%s: No space left. for %lu bytes", __FUNCTION__, nbytes);
     return NULL;
 #endif
   }
@@ -436,7 +425,7 @@ size_t TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone) {
   TLSF_UNIT_T *p = (TLSF_UNIT_T*)(((uintptr_t)start + TLSF_UNIT_ALIGN - 1) & ~(TLSF_UNIT_ALIGN - 1));
   unsigned int n = (tail - (uintptr_t)p) / sizeof(TLSF_UNIT_T);
   if (n < 5) {
-    TLSF_WARN("%s: Too small block size. start=%p; nbytes=%lu (%u units).\n",
+    TLSF_WARN_HANDLER("%s: Too small block size. start=%p; nbytes=%lu (%u units).\n",
       __FUNCTION__, start, nbytes, n);
     return 0;
   }
@@ -462,7 +451,7 @@ TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
   size_t skip = (uintptr_t)zone - (uintptr_t)start;
 
   if (nbytes < sizeof(struct TLSF_ZONE) + skip) {
-    TLSF_WARN("%s: Too small block size. start=%p; nbytes=%lu;"
+    TLSF_WARN_HANDLER("%s: Too small block size. start=%p; nbytes=%lu;"
               " %lu bytes dropped for alignment; need %lu bytes at least.\n",
         __FUNCTION__, start, nbytes, skip, sizeof(struct TLSF_ZONE));
     return NULL;
@@ -483,7 +472,6 @@ TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
 #  undef TLSF_SIZET_MAGIC1
 #  undef TLSF_SIZET_MAGIC
 #  undef TLSF_ASSERT
-#  undef TLSF_WARN
 #  undef TLSF_UNIT_T
 #  undef TLSF_UNIT_ALIGN
 
