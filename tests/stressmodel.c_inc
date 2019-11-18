@@ -1,0 +1,211 @@
+/**
+ * @file
+ * @brief Benchmark model
+ * @section LICENSE
+ *
+ * MIT License
+ *
+ * Copyright (c) 2019 Hattori, Hiroki
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+#include <stdlib.h> // for *REAL* malloc/free.
+#include <assert.h>
+#include <time.h>
+
+
+// #define STRESSMODEL_MALLOC()
+// #define STRESSMODEL_FREE()
+// #define STRESSMODEL_PRINT_REPORT()
+
+#define STRESSMODEL_GLUE2(x, y)       x##y
+#define STRESSMODEL_GLUE3(x, y)       STRESSMODEL_GLUE2(x, y)
+#define STRESSMODEL_GLUE(x)           STRESSMODEL_GLUE3(STRESSMODEL_PREFIX, x)
+
+#define STRESSMODEL_BIN   STRESSMODEL_GLUE(stressmodel_bin)
+#define STRESSMODEL_A     STRESSMODEL_GLUE(stressmodel_A)
+#define STRESSMODEL_B     STRESSMODEL_GLUE(stressmodel_B)
+#define STRESSMODEL_C     STRESSMODEL_GLUE(stressmodel_C)
+#define STRESSMODEL_D     STRESSMODEL_GLUE(stressmodel_D)
+#define STRESSMODEL_E     STRESSMODEL_GLUE(stressmodel_E)
+
+
+
+struct STRESSMODEL_BIN {
+  size_t size;
+  unsigned int n_tries;
+  unsigned int n_success;
+};
+
+
+void STRESSMODEL_REPORT(struct STRESSMODEL_BIN const *s,
+    struct timespec const *ts, struct timespec const *te) {
+  STRESSMODEL_PRINTF("%d.%d - %d.%d + size(%u), n_tries(%u), n_success(%u)\n",
+      ts->tv_sec, ts->tv_nsec,
+      te->tv_sec, te->tv_nsec,
+      s->size, s->n_tries, s->n_success);
+}
+
+
+
+void STRESSMODEL_A(struct STRESSMODEL_BIN *s) {
+  s->n_success = 0;
+
+  struct timespec ts, te;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+
+  for (int i = 0; i < s->n_tries; ++i) {
+    void *p = STRESSMODEL_MALLOC(s->size);
+    if (p) {
+      ++s->n_success;
+      STRESSMODEL_FREE(p);
+    }
+  }
+
+  clock_gettime(CLOCK_MONOTONIC, &te);
+  STRESSMODEL_REPORT(s, &ts, &te);
+}
+
+
+
+
+void STRESSMODEL_B(struct STRESSMODEL_BIN *s) {
+  s->n_success = 0;
+
+  void **p = malloc(sizeof(void*) * s->n_tries);
+  assert(p != NULL);
+
+  struct timespec ts, te;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+
+  for (int i = 0; i < s->n_tries; ++i)
+    p[i] = STRESSMODEL_MALLOC(s->size);
+
+  for (int i = 0; i < s->n_tries; ++i) {
+    if (p[i]) {
+      ++s->n_success;
+      STRESSMODEL_FREE(p[i]);
+    }
+  }
+
+  clock_gettime(CLOCK_MONOTONIC, &te);
+  STRESSMODEL_REPORT(s, &ts, &te);
+
+  free(p);
+}
+
+
+void STRESSMODEL_C(struct STRESSMODEL_BIN *s) {
+  s->n_success = 0;
+
+  void **p = malloc(sizeof(void*) * s->n_tries);
+  assert(p != NULL);
+
+  struct timespec ts, te;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+
+  for (int i = 0; i < s->n_tries; ++i)
+    p[i] = STRESSMODEL_MALLOC(s->size);
+
+  for (int i = s->n_tries; --i >= 0; ) {
+    if (p[i]) {
+      ++s->n_success;
+      STRESSMODEL_FREE(p[i]);
+    }
+  }
+
+  clock_gettime(CLOCK_MONOTONIC, &te);
+  STRESSMODEL_REPORT(s, &ts, &te);
+
+  free(p);
+}
+
+
+void STRESSMODEL_D(struct STRESSMODEL_BIN *s) {
+  s->n_success = 0;
+
+  void **p = malloc(sizeof(void*) * s->n_tries);
+  assert(p != NULL);
+
+  struct timespec ts, te;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+
+  for (int i = 0; i < s->n_tries; ++i) {
+    p[i] = STRESSMODEL_MALLOC(s->size);
+    if (p[i]) ++s->n_success;
+  }
+
+  for (int i = 0; i < s->n_tries; i += 2)
+    if (p[i]) STRESSMODEL_FREE(p[i]);
+  for (int i = 1; i < s->n_tries; i += 2)
+    if (p[i]) STRESSMODEL_FREE(p[i]);
+
+  clock_gettime(CLOCK_MONOTONIC, &te);
+  STRESSMODEL_REPORT(s, &ts, &te);
+
+  free(p);
+}
+
+
+void STRESSMODEL_E(struct STRESSMODEL_BIN *s) {
+  s->n_success = 0;
+
+  void **p = malloc(sizeof(void*) * s->n_tries);
+  assert(p != NULL);
+
+  struct timespec ts, te;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+
+  for (int i = 0; i < s->n_tries; ++i) {
+    p[i] = STRESSMODEL_MALLOC(s->size);
+    if (p[i]) ++s->n_success;
+  }
+
+  for (int i = 0; i < s->n_tries; i += 2)
+    if (p[i]) STRESSMODEL_FREE(p[i]);
+  for (int i = 0; i < s->n_tries; i += 2) {
+    p[i] = STRESSMODEL_MALLOC(s->size);
+    if (p[i]) ++s->n_success;
+  }
+
+  for (int i = 0; i < s->n_tries; i += 2)
+    if (p[i]) STRESSMODEL_FREE(p[i]);
+  for (int i = 1; i < s->n_tries; i += 2)
+    if (p[i]) STRESSMODEL_FREE(p[i]);
+
+  clock_gettime(CLOCK_MONOTONIC, &te);
+  STRESSMODEL_REPORT(s, &ts, &te);
+
+  free(p);
+}
+
+
+
+
+
+
+
+#undef STRESSMODEL_A
+#undef STRESSMODEL_B
+
+#undef STRESSMODEL_GLUE
+#undef STRESSMODEL_GLUE2
+#undef STRESSMODEL_GLUE3
+
+// vim: ts=8 sw=2 filetype=c cindent expandtab :
