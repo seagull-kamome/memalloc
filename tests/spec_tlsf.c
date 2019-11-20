@@ -36,8 +36,8 @@ struct test_zonedata { unsigned int dummy; };
 #define TLSF_PREFIX                 my_
 #define TLSF_EXTRA_ZONEDATA_T       struct test_zonedata
 #define TLSF_CHECK_PARAM (1)
-//#define TLSF_WARN_HANDLER(fmt, ...) do { nanocspec_quote(fmt, __VA_ARGS__); } while (0)
-#define TLSF_WARN_HANDLER(fmt, ...) do { } while (0)
+#define TLSF_WARN_HANDLER(fmt, ...) do { nanocspec_quote(fmt, __VA_ARGS__); } while (0)
+//#define TLSF_WARN_HANDLER(fmt, ...) do { } while (0)
 #define TLSF_ASSERT(x)              do { assert(x); } while (0)
 #include "../tlsf.c_inc"
 
@@ -61,7 +61,7 @@ my_tlsf_zone_t zone0;
 describe(tlsf_show_configs, "Configuration.")
 
   it("just show configuration before any tests.")
-    nanospec_printf(
+    nanocspec_quote(
         "\n  > unit_size = %zu"
         "\n  > zone_header_size = %zu"
         "\n  > zone_extra_data_size = %zu"
@@ -139,7 +139,7 @@ describe(tlsf_alloc, "Allocate memory.")
     should_ne(NULL, my_tlsf_alloc(1000, zone0));
     should_ne(NULL, my_tlsf_alloc(5000, zone0));
 #if TEST_SL==0
-    should_ne(NULL, my_tlsf_alloc(65544, zone0));
+    should_ne(NULL, my_tlsf_alloc(60000, zone0));
 #else
     should_ne(NULL, my_tlsf_alloc(98000, zone0));
 #endif
@@ -170,7 +170,7 @@ describe(tlsf_stressmodel, "Stress")
   my_tlsf_add_block(blk_10k[1], sizeof(blk_10k[1]), zone0);
   my_tlsf_add_block(blk_100k[0], sizeof(blk_100k[0]), zone0);
   my_tlsf_add_block(blk_100k[1], sizeof(blk_100k[1]), zone0);
-/*
+
   it("model A")
     struct my_tlsf_stressmodel_bin bins[] = {
       { 16, 1000, }, { 32, 1000, }, { 64, 1000 },
@@ -179,15 +179,44 @@ describe(tlsf_stressmodel, "Stress")
       };
     for (unsigned int i = 0; i < sizeof(bins) / sizeof(bins[0]); ++i)
       my_tlsf_stressmodel_A(bins + i);
-*/
+
+
   it("model B")
     struct my_tlsf_stressmodel_bin bins[] = {
-      { 16, 1000, }, { 32, 1000, }, { 64, 1000 },
-      { 128, 1000, }, { 256, 1000, }, { 512, 1000, },
-      { 1024, 1000, }
+      { 16, 100, }, { 32, 100, }, { 64, 100 },
+      { 128, 100, }, { 256, 100, }, { 512, 100, },
+      { 1024, 100, }
       };
     for (unsigned int i = 0; i < sizeof(bins) / sizeof(bins[0]); ++i)
       my_tlsf_stressmodel_B(bins + i);
+
+  it("model C")
+    struct my_tlsf_stressmodel_bin bins[] = {
+      { 16, 100, }, { 32, 100, }, { 64, 100 },
+      { 128, 100, }, { 256, 100, }, { 512, 100, },
+      { 1024, 100, }
+      };
+    for (unsigned int i = 0; i < sizeof(bins) / sizeof(bins[0]); ++i)
+      my_tlsf_stressmodel_C(bins + i);
+    //my_tlsf_dump_zone(printf, zone0);
+
+  it("model D")
+    struct my_tlsf_stressmodel_bin bins[] = {
+      { 16, 100, }, { 32, 100, }, { 64, 100 },
+      { 128, 100, }, { 256, 100, }, { 512, 100, },
+      { 1024, 100, }
+      };
+    for (unsigned int i = 0; i < sizeof(bins) / sizeof(bins[0]); ++i)
+      my_tlsf_stressmodel_D(bins + i);
+
+   it("model E")
+    struct my_tlsf_stressmodel_bin bins[] = {
+      { 16, 100, }, { 32, 100, }, { 64, 100 },
+      { 128, 100, }, { 256, 100, }, { 512, 100, },
+      { 1024, 100, }
+      };
+    for (unsigned int i = 0; i < sizeof(bins) / sizeof(bins[0]); ++i)
+      my_tlsf_stressmodel_E(bins + i);
 
 end_describe
 

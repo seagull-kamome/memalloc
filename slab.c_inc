@@ -46,16 +46,21 @@
 #include <stdint.h>
 #include <assert.h>
 
-#define SLAB_GLUE2(x, y)       x##y
-#define SLAB_GLUE3(x, y)       SLAB_GLUE2(x, y)
-#define SLAB_GLUE(x)           SLAB_GLUE3(SLAB_PREFIX, x)
+#if defined(SLAB_PREFIX)
+#  define SLAB_GLUE2(x, y)       x##y
+#  define SLAB_GLUE3(x, y)       SLAB_GLUE2(x, y)
+#  define SLAB_GLUE(x)           SLAB_GLUE3(SLAB_PREFIX, x)
+#else
+#  define SLAB_GLUE(x)           x
+#endif
 
+#define SLAB_PAGE_HDR_TAG      SLAB_GLUE(slab_page_hdr_tag)
 #define SLAB_ZONE              SLAB_GLUE(slab_zone)
 #define SLAB_ZONE_T            SLAB_GLUE(slab_zone_t)
 #define SLAB_FREE              SLAB_GLUE(slab_free)
 #define SLAB_ALLOC             SLAB_GLUE(slab_alloc)
-#define SLAB_CREATE_ZONE       SLAB_GLUE(slab_create_zone)
-//#define SLAB_DESTROY_ZONE      SLAB_GLUE(slab_destroy_zone)
+#define SLAB_INITIALIZE_ZONE   SLAB_GLUE(slab_initialize_zone)
+#define SLAB_DESTROY_ZONE      SLAB_GLUE(slab_destroy_zone)
 #define SLAB_ADD_PAGE          SLAB_GLUE(slab_add_page)
 
 #  if defined(SLAB_PRIVATE_API) && SLAB_PRIVATE_API
@@ -64,6 +69,20 @@
 #    define SLAB_API
 #  endif
 
+
+#  define SLAB_UNIT_T  SLAB_GLUE(slab_unit_t)
+union SLAB_UNIT_T { size_t sz; union SLAB_UNIT_T* ptr; };
+static_assert(SLAB_PAGE_SHIFT < sizeof(union SLAB_UNIT_T) * 8,
+             "Too small page shift.");
+static_assert(sizeof(union SLAB_UNIT_T) == 4
+           || sizeof(union SLAB_UNIT_T) == 8, "unknown unit size");
+#define SLAB_UNIT_SHIFT        (sizeof(union SLAB_UNIT_T) == 4? 2 : 3)
+
+static_assert(SLAB_PAGE_SHIFT > SLAB_SLSHIFT + SLAB_UNIT_SHIFT, "Too small pageshift.");
+static_assert(SLAB_SLSHIFT > 0, "Bad slshift");
+#define SLAB_FLSHIFT           (SLAB_PAGE_SHIFT - SLAB_SLSHIFT - SLAB_UNIT_SHIFT)
+#define SLAB_SLDEPTH           (1 << SLAB_SLSHIFT)
+#define SLAB_SLMAPSIZE         (SLAB_FLSHIFT * SLAB_SLDEPTH)
 
 
 
@@ -74,9 +93,19 @@ extern "C" {
 #endif
 
 
-typedef struct SLAB_ZONE *SLAB_ZONE_T;
-SLAB_API SLAB_ZONE_T SLAB_CREATE_ZONE(uint8_t start, uint8_t step, uint8_t n);
-//void SLAB_DESTROY_ZONE(SLAB_ZONE_T zone);
+struct SLAB_PAGE_HDR_TAG;
+typedef struct SLAB_ZONE {
+#  if defined(SLAB_EXTRA_ZONE_DATA_T)
+  SLAB_EXTRA_ZONE_DATA_T extra;
+#  endif
+  struct SLAB_PAGE_HDR_TAG *free_pages;
+  struct SLAB_PAGE_HDR_TAG *full_pages;
+  struct SLAB_PAGE_HDR_TAG *partial_pages[SLAB_SLMAPSIZE];
+} *SLAB_ZONE_T;
+
+
+SLAB_API void SLAB_INITIALIZE_ZONE(SLAB_ZONE_T zone);
+void SLAB_DESTROY_ZONE(SLAB_ZONE_T zone);
 SLAB_API void *SLAB_ALLOC(size_t nbytes, SLAB_ZONE_T zone);
 SLAB_API void SLAB_FREE(void *ptr, SLAB_ZONE_T zone);
 SLAB_API void SLAB_ADD_PAGE(uintptr_t pg, unsigned int npages, SLAB_ZONE_T zone);
@@ -96,12 +125,6 @@ SLAB_API void SLAB_ADD_PAGE(uintptr_t pg, unsigned int npages, SLAB_ZONE_T zone)
 #  define SLAB_PTR_PAGE(ptr) ((uintptr_t)(ptr) & SLAB_PAGE_MASK)
 #  define SLAB_PTR_OFS(ptr)  ((uintptr_t)(ptr) & ~SLAB_PAGE_MASK)
 
-#  define SLAB_UNIT_T  SLAB_GLUE(slab_unit_t)
-union SLAB_UNIT_T { size_t sz; union SLAB_UNIT_T* ptr; };
-static_assert(SLAB_PAGE_SHIFT < sizeof(union SLAB_UNIT_T) * 8,
-             "Too small page shift.");
-
-
 
 // bin
 // | start | start + step * 1 | ... | start + step * (n - 1) |
@@ -112,18 +135,18 @@ static_assert(SLAB_PAGE_SHIFT < sizeof(union SLAB_UNIT_T) * 8,
 //           v next_page
 //  | Page header |       |      |      |      |
 //
-#  define SLAB_PAGE_HDR_TAG  SLAB_GLUE(slab_page_hdr_tag)
 struct SLAB_PAGE_HDR_TAG {
   // MSB                                           LSB
-  // | Next page#    | BumpTop or Free           |X|B|
+  // | Next page#    | BumpTop or Free           |R|B|
   //                  <--------- PAGE_SHIFT -------->
   // B = 0:Free list 1:Bump ptr
-  void *next_page;
+  // R = 0:Allocated page  1:Reserved page
+  uintptr_t next_page;
 
   // MSB                                           LSB
   // | Prev page#    |X|X| Number of used objects    |
   //                  <--------- PAGE_SHIFT -------->
-  void *prev_page;
+  uintptr_t prev_page;
 
   uint16_t bin_ix;
 
@@ -132,19 +155,26 @@ struct SLAB_PAGE_HDR_TAG {
 static_assert(((uintptr_t)((struct SLAB_PAGE_HDR_TAG*)NULL)->units & 3) == 0,
     "bad alignment?");
 
+#  define SLAB_MAPPING_SEARCH     SLAB_GLUE(slab_mapping_search)
+static inline uint16_t SLAB_MAPPING_SEARCH(size_t nunits) {
+  uint8_t const f0 = sizeof(size_t) * 8 - SLAB_SLSHIFT
+                   - SLAB_CLZ(nunits | (1 << (SLAB_SLSHIFT - 1)));
+  size_t const x = nunits + (f0? (((size_t)1 << (f0 - 1)) - 1) : 0);
+  uint8_t const f1 = sizeof(size_t) * 8 - SLAB_SLSHIFT
+                   - SLAB_CLZ(x | (1 << (SLAB_SLSHIFT - 1)));
+  uint8_t const s = (x >> (f1? (f1 - 1) : 0)) & (SLAB_SLDEPTH  - 1);
+  SLAB_ASSERT((f1 << SLAB_SLSHIFT) + s < SLAB_SLMAPSIZE);
+  return ((uint16_t)f1 << SLAB_SLSHIFT) + s;
+}
 
-typedef struct SLAB_ZONE {
-#  if defined(SLAB_EXTRA_ZONE_DATA_T)
-  SLAB_EXTRA_ZONE_DATA_T extra;
-#  endif
-  struct SLAB_PAGE_HDR_TAG *freepage;
 
-  uint8_t bin_start;  // in SLAB_UNIT_T
-  uint8_t bin_num;
-  uint8_t bin_step;   // in SLAB_UNIT_T
-
-  struct SLAB_PAGE_HDR_TAG *bins[];
-} *SLAB_ZONE_T;
+#  define SLAB_BIN2UNITS         SLAB_GLUE(slab_bin2units)
+static inline size_t SLAB_BIN2UNIT(uint16_t ix) {
+  uint16_t const x = (ix >> SLAB_SLSHIFT);
+  uint16_t const y = ix & (((uint16_t)1 << SLAB_SLSHIFT) - 1);
+  return (x == 0)? (size_t)y
+                 : (((uint16_t)1 << SLAB_SLSHIFT) | y) << (x - 1);
+}
 
 
 
@@ -154,10 +184,9 @@ void SLAB_FREE(void *ptr, SLAB_ZONE_T zone) {
 
   struct SLAB_PAGE_HDR_TAG * const pg = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(ptr);
   SLAB_ASSERT(SLAB_PTR_OFS(pg->prev_page) > 0);
-  uintptr_t const n = (uintptr_t)pg->prev_page - 1;
+  uintptr_t const n = pg->prev_page - 1;
 
   if (SLAB_PTR_OFS(n) == 0) { // page to be free.
-    SLAB_ASSERT(pg->next_page != NULL); // because every page has at least two objects.
     struct SLAB_PAGE_HDR_TAG *nxtpg = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(pg->next_page);
     struct SLAB_PAGE_HDR_TAG *prvpg = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(pg->prev_page);
     prvpg->next_page = (void*)nxtpg;
@@ -193,46 +222,57 @@ void SLAB_FREE(void *ptr, SLAB_ZONE_T zone) {
 SLAB_API
 void *SLAB_ALLOC(size_t nbytes, SLAB_ZONE_T zone) {
   assert(nbytes > 0);
+  assert(nbytes < ((size_t)1 << SLAB_PAGE_SHIFT) / 2);
   assert(zone != NULL);
 
-  size_t const n = (nbytes + sizeof(union SLAB_UNIT_T) - 1) / sizeof(union SLAB_UNIT_T);
-  if (n > zone->bin_start + zone->bin_step * (zone->bin_num - 1))
-    return NULL;
+  size_t const nunits = (nbytes + sizeof(union SLAB_UNIT_T) - 1) / sizeof(union SLAB_UNIT_T);
+  uint16_t ix = SLAB_MAPPING_SEARCH(nunits);
+  size_t const sz = SLAB_BIN2UNIT(ix);
 
-  unsigned int const ix = ((n < zone->bin_start)? 0
-         : (((n - zone->bin_start) + zone->bin_step - 1) / zone->bin_step) );
-  unsigned int const bin_sz = zone->bin_start + zone->bin_step * ix;
-
-  struct SLAB_PAGE_HDR_TAG *pg = zone->bins[ix];
+  struct SLAB_PAGE_HDR_TAG *pg = zone->partial_pages[ix];
   if (pg == NULL) {
-    if (zone->freepage == NULL) {
+    uintptr_t flgs = 0;
+    pg = zone->free_pages;
+    if (pg == NULL) {
       pg = (struct SLAB_PAGE_HDR_TAG*)SLAB_PAGE_ALLOC();
       if (pg == NULL) return NULL;
     } else {
-      pg = zone->freepage;
-      zone->freepage = pg->next_page;
+      zone->free_pages = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(pg->next_pag);
+      flgs = pg->next_page & 2;;
     }
-    pg->prev_page = (void*)(SLAB_PTR_PAGE(NULL) | 1);
-    pg->next_page = (void*)(SLAB_PTR_PAGE(NULL) | SLAB_PTR_OFS(&pg->units[bin_sz]) | 1);
+    pg->prev_page = SLAB_PTR_PAGE(NULL) | 1;
+    pg->next_page = SLAB_PTR_PAGE(NULL) | SLAB_PTR_OFS(pg->units + bin_sz) | flgs | 1;
     pg->bin_ix = ix;
-    zone->bins[ix] = pg;
+    zone->partial_pages[ix] = (struct SLAB_PAGE_HDR_TAG*)pg;
     return (void*)pg->units;
   }
 
   void *r = (void*)(SLAB_PTR_PAGE(pg) | (SLAB_PTR_OFS(pg->next_page) & ~3));
   union SLAB_UNIT_T *nxtobj;
-  if ((uintptr_t)pg->next_page & 1) { // it's bump pointer.
+  if (pg->next_page & 1) { // it's bump pointer.
     nxtobj = (union SLAB_UNIT_T*)pg->next_page + bin_sz;
     if (SLAB_PTR_PAGE(SLAB_PTR_OFS(nxtobj) + bin_sz * sizeof(union SLAB_UNIT_T)))
       nxtobj = NULL;
   } else { // it's free list.
-    nxtobj = (union SLAB_UNIT_T*)((union SLAB_UNIT_T*)r)->ptr;
+    nxtobj = ((union SLAB_UNIT_T*)r)->ptr;
   }
 
-  if (nxtobj == NULL) // no free objects left.
-    zone->bins[ix] = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(pg->next_page);
-  pg->next_page = (void*)nxtobj;
-  pg->prev_page = (void*)((uintptr_t)pg->prev_page + 1);
+  pg->prev_page = (uintptr_t)pg->prev_page + 1;
+
+  if (nxtobj == NULL) { // no free objects left.
+    struct SLAB_PAGE_HDR_TAG* nxt = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(pg->next_page);
+    nxt->prev_page = SLAB_PTR_PAGE(NULL) | SLAB_PTR_OFS(nxt->prev_page);
+    zone->partial_pages[ix] = nxt;
+
+    nxt = zone->full_pages;
+    pg->next_page = (uintptr_t)nxt | (pg->next_page & 2);
+    pg->prev_page = SLAB_PTR_PAGE(NULL) | SLAB_PT_OFS(pg->prev_page);
+    nxt->prev_page = SLAB_PTR_PAGE(pg) | SLAB_PTR_OFS(nxt->prev_page);
+    zone->full_page = pg;
+  } else {
+    pg->next_page = SLAB_PTR_PAGE(pg->next_page) | (SLAB_PTR_OFS(nxtobj) & ~2);
+                  | (pg->next_page & 2);
+  }
   return r;
 }
 
@@ -241,27 +281,23 @@ void *SLAB_ALLOC(size_t nbytes, SLAB_ZONE_T zone) {
 
 
 SLAB_API
-SLAB_ZONE_T SLAB_CREATE_ZONE(uint8_t start, uint8_t step, uint8_t n) {
-  assert(start > 0);
-  assert(step > 0);
-  assert(n > 0);
+void SLAB_INITIALIZE_ZONE(SLAB_ZONE_T zone) {
+  assert(zone != NULL);
 
-  SLAB_ZONE_T zone = SLAB_ZONE_MALLOC(
-      sizeof(*(SLAB_ZONE_T)NULL)
-      + sizeof(struct SLAB_PAGE_HDR_TAG*) * n);
-  if (zone == NULL) return NULL;
-
-  zone->freepage = NULL;
-  zone->bin_start = start;
-  zone->bin_step = step;
-  zone->bin_num = n;
-  for (unsigned int i = 0; i < n; ++i)
-    zone->bins[i] = NULL;
-
+  zone->free_pages = NULL;
+  zone->full_pages = NULL;
+  for (unsigned int i = 0; i < SLAB_SLMAPSIZE; ++i)
+    zone->partial_pages[i] = NULL;
   return zone;
 }
 
 
+
+SLAB_API
+void SLAB_DESTROY_ZONE(SLAB_ZONE_T zone) {
+  // TODO:
+  SLAB_ZONE_FREE(zone);
+}
 
 
 SLAB_API
@@ -271,13 +307,14 @@ void SLAB_ADD_PAGE(uintptr_t pg, unsigned int npages, SLAB_ZONE_T zone) {
 
   do {
     struct SLAB_PAGE_HDR_TAG *p = (struct SLAB_PAGE_HDR_TAG*)pg;
-    p->next_page = zone->freepage;
-    zone->freepage = p;
+    p->next_page = zone->free_pages | 2;
+    zone->free_pages = p;
     pg += SLAB_PAGE_SIZE;
   } while (--npages);
 }
 
 
+#undef SLAB_MAPPING_SEARCH
 #undef SLAB_PTR_BITS
 #undef SLAB_PAGE_SIZE
 #undef SLAB_PAGE_MARSK
@@ -295,11 +332,20 @@ void SLAB_ADD_PAGE(uintptr_t pg, unsigned int npages, SLAB_ZONE_T zone) {
 #undef SLAB_GLUE3
 #undef SLAB_GLUE2
 #undef SLAB_GLUE
+
+#undef SLAB_UNIT_T
+#undef SLAB_UNIT_SHIFT
+#undef SLAB_FLSHIFT
+#undef SLAB_SLDEPTH
+#undef SLAB_SLMAPSIZE
+
+#undef SLAB_PAGE_HDR_TAG
 #undef SLAB_ZONE
 #undef SLAB_ZONE_T
 #undef SLAB_FREE
 #undef SLAB_ALLOC
-#undef SLAB_CREATE_ZONE
+#undef SLAB_INITIALIZE_ZONE
+#undef SLAB_DESTROY_ZONE
 
 
 

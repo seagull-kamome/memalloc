@@ -126,10 +126,13 @@
 #include <stdint.h>
 #include <assert.h>
 
-
-#define TLSF_GLUE2(x, y)       x##y
-#define TLSF_GLUE3(x, y)       TLSF_GLUE2(x, y)
-#define TLSF_GLUE(x)           TLSF_GLUE3(TLSF_PREFIX, x)
+#if defined(TLSF_PREFIX)
+#  define TLSF_GLUE2(x, y)       x##y
+#  define TLSF_GLUE3(x, y)       TLSF_GLUE2(x, y)
+#  define TLSF_GLUE(x)           TLSF_GLUE3(TLSF_PREFIX, x)
+#else
+#  define TLSF_GLUE(x)           x
+#endif
 
 #define TLSF_ZONE              TLSF_GLUE(tlsf_zone)
 #define TLSF_ZONE_T            TLSF_GLUE(tlsf_zone_t)
@@ -139,6 +142,7 @@
 #define TLSF_ADD_BLOCK         TLSF_GLUE(tlsf_add_block)
 #define TLSF_CONFIG            TLSF_GLUE(tlsf_config)
 #define TLSF_CONFIG_TAG        TLSF_GLUE(tlsf_config_tag)
+#define TLSF_DUMP_ZONE         TLSF_GLUE(tlsf_dump_zone)
 
 #if defined(TLSF_PRIVATE_API) && TLSF_PRIVATE_API
 #  define TLSF_API  static inline
@@ -177,6 +181,7 @@ TLSF_API void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone);
 TLSF_API void TLSF_FREE(void *ptr, TLSF_ZONE_T zone);
 TLSF_API size_t TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone);
 TLSF_API TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes);
+TLSF_API void TLSF_DUMP_ZONE(int (*outf)(char const* fmt, ...), TLSF_ZONE_T zone);
 
 #if defined(TLSF_PRIVATE_API) && TLSF_PRIVATE_API
 #else
@@ -220,8 +225,9 @@ static_assert(sizeof(TLSF_UNIT_T) >= 4, "No magic space of size_t.");
 
 #  define TLSF_MAPPING_INSERT   TLSF_GLUE(tlsf_mapping_insert)
 static inline unsigned int TLSF_MAPPING_INSERT(size_t nunits) {
-  uint8_t f = TLSF_FLSHIFT - TLSF_CLZ((nunits - 1) | ((TLSF_SLDEPTH << 1) -1));
-  uint8_t s = ((nunits - 1) >> (f?f:1)) & (TLSF_SLDEPTH - 1);
+  uint8_t f = TLSF_FLSHIFT - TLSF_CLZ(nunits | ((TLSF_SLDEPTH << 1) -1));
+  uint8_t s = (nunits >> (f?f:1)) & (TLSF_SLDEPTH - 1);
+  TLSF_ASSERT((f << TLSF_SLSHIFT) + s < TLSF_SLMAPSIZE);
   return (f << TLSF_SLSHIFT) + s;
 }
 
@@ -265,6 +271,7 @@ struct TLSF_CONFIG_TAG TLSF_CONFIG = {
 #  define TLSF_ADD_CHUNK     TLSF_GLUE(tlsf_add_chunk)
 static inline void TLSF_ADD_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
   TLSF_ASSERT(zone != NULL);
+  TLSF_ASSERT(chunk != NULL);
   TLSF_ASSERT((chunk[0].sz & TLSF_SIZET_MAGIC) == 0);
 
   unsigned int const ix = TLSF_MAPPING_INSERT(chunk[0].sz);
@@ -295,15 +302,13 @@ static inline void TLSF_ADD_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
 #  define TLSF_REMOVE_CHUNK  TLSF_GLUE(tlsf_remove_chunk)
 static inline void TLSF_REMOVE_CHUNK(TLSF_UNIT_T *chunk, TLSF_ZONE_T zone) {
   TLSF_ASSERT(zone != NULL);
-  TLSF_ASSERT(chunk); // it coruppsed.
+  TLSF_ASSERT(chunk != NULL); // it coruppsed.
   TLSF_ASSERT((chunk[0].sz & TLSF_SIZET_MAGIC0) == 0); // it coruppsed.
 
   chunk[3].ptr[2].ptr = chunk[2].ptr; // chunk->prv->next = chunk->next
   chunk[2].ptr[3].ptr = chunk[3].ptr; // chunk->next->prv = chunk->prv
   unsigned int const ix = TLSF_MAPPING_INSERT(chunk[0].sz);
   if (zone->frees[ix] == chunk) { // it's first chunk.
-    chunk[0].sz &= ~TLSF_SIZET_MAGIC;
-
     if (chunk[2].ptr == chunk) { // to be empty.
       zone->frees[ix] = NULL;
 
@@ -333,12 +338,13 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
   if (nunits < 2) nunits = 2; // Minimum allocation size is 2.
 
   unsigned int const ix = ({
-    uint8_t f = TLSF_FLSHIFT - TLSF_CLZ((nunits - 1) | ((TLSF_SLDEPTH << 1)- 1));
+    uint8_t f = TLSF_FLSHIFT - TLSF_CLZ(nunits | ((TLSF_SLDEPTH << 1)- 1));
     TLSF_MAPPING_INSERT(nunits + (((size_t)1 << (f?f:1)) - 1)); });
 
   unsigned int const iy = TLSF_FFS(zone->slmap[ix / TLSF_BMPW] & ((uintptr_t)-1 << (ix % TLSF_BMPW)) );
   TLSF_UNIT_T *p;
   if (iy) {
+    TLSF_ASSERT((ix & ~(TLSF_BMPW - 1)) + iy - 1 < TLSF_SLMAPSIZE);
     p = zone->frees[(ix & ~(TLSF_BMPW - 1)) + iy - 1];
   } else {
 #if (TLSF_SLSHIFT > 0)
@@ -367,11 +373,15 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
   TLSF_ASSERT((p[0].sz & TLSF_SIZET_MAGIC) == 0);
   TLSF_ASSERT(p[0].sz >= nunits);
 
-  if (p[0].sz >= nunits + 2 + 4) {
+  if (p[0].sz >= nunits + 2 + 2) {
     TLSF_UNIT_T *q = p + 2  + nunits;
+
     q[0].sz = p[0].sz - 2 - nunits;
-    p[2 + p[0].sz + 1].sz = q[0].sz;
     q[1].sz = nunits;
+
+    TLSF_UNIT_T *nxt = p + 2 + p[0].sz;
+    if (nxt[0].sz != TLSF_SIZET_MAGIC0) nxt[1].sz = q[0].sz;
+
     p[0].sz = nunits;
     TLSF_ADD_CHUNK(q, zone);
     //printf("%s:    it take %lu units back (flmap=%lx).\n", __FUNCTION__,
@@ -379,6 +389,7 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
   }
 
   p[0].sz |= TLSF_SIZET_MAGIC0;  // Mark as used.
+  //fprintf(stderr, "%s: %p\n", __FUNCTION__, p+2);
   return (void*)(p + 2);
 }
 
@@ -387,27 +398,40 @@ void *TLSF_ALLOC(size_t nbytes, TLSF_ZONE_T zone) {
 
 TLSF_API
 void TLSF_FREE(void *ptr, TLSF_ZONE_T zone) {
+  //fprintf(stderr, "%s: %p\n", __FUNCTION__, ptr);
   TLSF_ASSERT_PARAM_(zone != NULL);
   TLSF_ASSERT_PARAM_(ptr != NULL);
 
   TLSF_UNIT_T *p = (TLSF_UNIT_T*)ptr - 2;
+  if (!(p[0].sz & TLSF_SIZET_MAGIC0)) {
+    TLSF_WARN_HANDLER("%s: Memory coruppsed around address %p.", __FUNCTION__, ptr);
+    return ;
+  }
+
   p[0].sz &= ~TLSF_SIZET_MAGIC0;
 
   TLSF_UNIT_T *const ql = p - p[1].sz - 2;
   TLSF_UNIT_T *const qr = p + p[0].sz + 2;
 
+  TLSF_ASSERT(qr[0].sz == TLSF_SIZET_MAGIC0
+          || (qr[1].sz & ~TLSF_SIZET_MAGIC0) == p[0].sz);
+  TLSF_ASSERT(p[1].sz == 0
+          || (ql[0].sz & ~TLSF_SIZET_MAGIC0) == p[1].sz);
+
   // Merge right.
-  if (qr[0].sz != 0 && !(qr[0].sz & TLSF_SIZET_MAGIC0)) {
+  if (!(qr[0].sz & TLSF_SIZET_MAGIC0)) {
     TLSF_REMOVE_CHUNK(qr, zone);
-    p[0].sz += qr[0].sz;
-    qr[2 + qr[0].sz + 1].sz = p[0].sz;
+    p[0].sz += qr[0].sz + 2;
+    if (qr[2 + qr[0].sz].sz != TLSF_SIZET_MAGIC0)
+      qr[2 + qr[0].sz + 1].sz = p[0].sz;
   }
 
   // Merge left.
-  if (ql[1].sz != 0 && !(ql[0].sz & TLSF_SIZET_MAGIC0)) {
+  if (p[1].sz != 0 && !(ql[0].sz & TLSF_SIZET_MAGIC0)) {
     TLSF_REMOVE_CHUNK(ql, zone);
-    ql[0].sz += p[0].sz;
-    p[2 + p[0].sz + 1].sz = ql[0].sz;
+    ql[0].sz += p[0].sz + 2;
+    if (p[2 + p[0].sz].sz != TLSF_SIZET_MAGIC0)
+      p[2 + p[0].sz + 1].sz = ql[0].sz;
     p = ql;
   }
 
@@ -432,7 +456,7 @@ size_t TLSF_ADD_BLOCK(void *start, size_t nbytes, TLSF_ZONE_T zone) {
 
   p[0].sz = n - 3;
   p[1].sz = 0;
-  p[n - 1].sz = 0;
+  p[n - 1].sz = TLSF_SIZET_MAGIC0;
   TLSF_ADD_CHUNK(p, zone);
 
   return (n - 3) * sizeof(TLSF_UNIT_T);
@@ -465,6 +489,31 @@ TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
 }
 
 
+TLSF_API
+void TLSF_DUMP_ZONE(int (*outf)(char const* fmt, ...), TLSF_ZONE_T zone) {
+#  if (TLSF_SLSHIFT > 0)
+  outf(".flmap = %lx\n", zone->flmap);
+#endif
+
+  for (unsigned int i = 0; i < sizeof(zone->slmap) / sizeof(zone->slmap[0]); ++i)
+    outf(".slmap[%d] = %lx\n", i, zone->slmap[i]);
+
+  outf(".frees[] = \n");
+  for (unsigned int i = 0; i < TLSF_SLMAPSIZE; ++i) {
+    TLSF_UNIT_T* p = zone->frees[i];
+    if (p == NULL) {
+      outf("[%d]..", i);
+    } else {
+      outf("\n  [%d] =\n", i);
+      do {
+        outf("      %p : size=%d prev_size=%d next_chunk=%p prev_chunk=%p\n",
+            p, p[0].sz, p[1].sz, p[2].ptr, p[3].ptr);
+        p = p[2].ptr;
+      } while (p != zone->frees[i]);
+    }
+  }
+}
+
 
 #  undef TLSF_FLSHIFT
 #  undef TLSF_SLMAPSIZE
@@ -495,6 +544,7 @@ TLSF_ZONE_T TLSF_CREATE_ZONE(void *start, size_t nbytes) {
 #undef TLSF_ALLOC
 #undef TLSF_CREATE_ZONE
 #undef TLSF_ADD_BLOCK
+#undef TLSF_DUMP_ZONE
 #undef TLSF_CONFIG
 #undef TLSF_CONFIG_TAG
 
