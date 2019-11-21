@@ -28,7 +28,6 @@
  * @section Usage
  *
  * ```` your_c_source.c
- * #define SLAB_ZONE_MALLOC
  * #define SLAB_PAGE_SHIFT
  * #define SLAB_PAGE_ALLOC()         (NULL)
  * #define SLAB_PAGE_FREE(pg)        (-1)
@@ -61,7 +60,7 @@
 #define SLAB_ALLOC             SLAB_GLUE(slab_alloc)
 #define SLAB_INITIALIZE_ZONE   SLAB_GLUE(slab_initialize_zone)
 #define SLAB_DESTROY_ZONE      SLAB_GLUE(slab_destroy_zone)
-#define SLAB_ADD_PAGE          SLAB_GLUE(slab_add_page)
+#define SLAB_GIVE_PAGES        SLAB_GLUE(slab_give_pages)
 
 #  if defined(SLAB_PRIVATE_API) && SLAB_PRIVATE_API
 #    define SLAB_API  static inline
@@ -71,7 +70,7 @@
 
 
 #  define SLAB_UNIT_T  SLAB_GLUE(slab_unit_t)
-union SLAB_UNIT_T { size_t sz; union SLAB_UNIT_T* ptr; };
+union SLAB_UNIT_T { size_t sz; union SLAB_UNIT_T* ptr; uintptr_t n; };
 static_assert(SLAB_PAGE_SHIFT < sizeof(union SLAB_UNIT_T) * 8,
              "Too small page shift.");
 static_assert(sizeof(union SLAB_UNIT_T) == 4
@@ -97,11 +96,17 @@ struct SLAB_PAGE_HDR_TAG;
 typedef struct SLAB_ZONE {
 #  if defined(SLAB_EXTRA_ZONE_DATA_T)
   SLAB_EXTRA_ZONE_DATA_T extra;
+#  else
+  struct { } extra;
 #  endif
   struct SLAB_PAGE_HDR_TAG *free_pages;
   struct SLAB_PAGE_HDR_TAG *full_pages;
   struct SLAB_PAGE_HDR_TAG *partial_pages[SLAB_SLMAPSIZE];
 } *SLAB_ZONE_T;
+#  define SLAB_ZONE_INITIALIZER(x) { \
+  .extra = x, .free_pages = NULL, .full_pages = NULL, \
+  .partial_pages = { NULL, } }
+
 
 
 SLAB_API void SLAB_INITIALIZE_ZONE(SLAB_ZONE_T zone);
@@ -155,6 +160,9 @@ struct SLAB_PAGE_HDR_TAG {
 static_assert(((uintptr_t)((struct SLAB_PAGE_HDR_TAG*)NULL)->units & 3) == 0,
     "bad alignment?");
 
+
+
+
 #  define SLAB_MAPPING_SEARCH     SLAB_GLUE(slab_mapping_search)
 static inline uint16_t SLAB_MAPPING_SEARCH(size_t nunits) {
   uint8_t const f0 = sizeof(size_t) * 8 - SLAB_SLSHIFT
@@ -169,7 +177,7 @@ static inline uint16_t SLAB_MAPPING_SEARCH(size_t nunits) {
 
 
 #  define SLAB_BIN2UNITS         SLAB_GLUE(slab_bin2units)
-static inline size_t SLAB_BIN2UNIT(uint16_t ix) {
+static inline size_t SLAB_BIN2UNITS(uint16_t ix) {
   uint16_t const x = (ix >> SLAB_SLSHIFT);
   uint16_t const y = ix & (((uint16_t)1 << SLAB_SLSHIFT) - 1);
   return (x == 0)? (size_t)y
@@ -177,42 +185,63 @@ static inline size_t SLAB_BIN2UNIT(uint16_t ix) {
 }
 
 
+#  define SLAB_REMOVE_PAGE_FROM_LIST SLAB_GLUE(slab_remove_page_from_list)
+static void SLAB_REMOVE_PAGE_FROM_LIST(struct SLAB_PAGE_HDR_TAG *pg, SLAB_ZONE_T zone) {
+  struct SLAB_PAGE_HDR_TAG *nxtpg = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(pg->next_page);
+  struct SLAB_PAGE_HDR_TAG *prvpg = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(pg->prev_page);
+
+  if (prvpg != NULL)
+    prvpg->next_page = (uintptr_t)nxtpg | SLAB_PTR_OFS(prvpg->next_page);
+  if (nxtpg != NULL)
+    nxtpg->prev_page = (uintptr_t)prvpg | SLAB_PTR_OFS(nxtpg->prev_page);
+
+  if (zone->partial_pages[pg->bin_ix] == pg)
+    zone->partial_pages[pg->bin_ix] = nxtpg;
+  else if (zone->full_pages == pg)
+    zone->full_pages = nxtpg;
+}
+
 
 SLAB_API
 void SLAB_FREE(void *ptr, SLAB_ZONE_T zone) {
   assert(ptr != NULL);
+  assert(((uintptr_t)ptr & 3) == 0);
+  assert(zone != NULL);
 
   struct SLAB_PAGE_HDR_TAG * const pg = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(ptr);
   SLAB_ASSERT(SLAB_PTR_OFS(pg->prev_page) > 0);
   uintptr_t const n = pg->prev_page - 1;
 
   if (SLAB_PTR_OFS(n) == 0) { // page to be free.
-    struct SLAB_PAGE_HDR_TAG *nxtpg = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(pg->next_page);
-    struct SLAB_PAGE_HDR_TAG *prvpg = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(pg->prev_page);
-    prvpg->next_page = (void*)nxtpg;
-    nxtpg->prev_page = (void*)prvpg;
-    if (zone->bins[pg->bin_ix] == pg) zone->bins[pg->bin_ix] = nxtpg;
+    SLAB_REMOVE_PAGE_FROM_LIST(pg, zone);
 
-    if (zone->freepage != NULL || SLAB_PAGE_FREE(pg)) {
-      pg->next_page = zone->freepage;
-      zone->freepage = pg->next_page;
+    if (zone->free_pages == NULL /* stock shortage. */
+     || (pg->next_page & 2) /* or, its preserved page. */
+     || SLAB_PAGE_FREE(pg)  /* or page allocator reject it. */ ) {
+      pg->next_page = SLAB_PTR_PAGE(zone->free_pages) | (pg->next_page & 2);
+      pg->prev_page = SLAB_PTR_PAGE(NULL) | 0;
+      zone->free_pages = pg;
     }
   } else {
-    ((union SLAB_UNIT_T*)ptr)->ptr = (union SLAB_UNIT_T*)((uintptr_t)pg | SLAB_PTR_OFS(pg->next_page));
+    ((union SLAB_UNIT_T*)ptr)->n = SLAB_PTR_OFS(pg->next_page) & ~2;
 
-    if (pg->next_page == NULL) {
-      struct SLAB_PAGE_HDR_TAG * const nxt = zone->bins[pg->bin_ix];
-      struct SLAB_PAGE_HDR_TAG * const prv = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(nxt->prev_page);
-      pg->next_page = (void*)((uintptr_t)nxt | SLAB_PTR_OFS(ptr));
-      pg->prev_page = (void*)((uintptr_t)prv | SLAB_PTR_OFS(n));
+    if (SLAB_PTR_OFS(pg->next_page) == 2) { /* it was full. */
+      SLAB_REMOVE_PAGE_FROM_LIST(pg, zone);
 
-      prv->next_page = (void*)((uintptr_t)pg | SLAB_PTR_OFS(prv->next_page));
-      nxt->prev_page = (void*)((uintptr_t)pg | SLAB_PTR_OFS(nxt->prev_page));
-
-      zone->bins[pg->bin_ix] = pg;
+      pg->next_page = SLAB_PTR_PAGE(zone->partial_pages[pg->bin_ix])
+                    | SLAB_PTR_OFS(ptr)
+                    | (pg->next_page & 2);
+      pg->prev_page = SLAB_PTR_PAGE(NULL) | SLAB_PTR_OFS(n);
+      if (zone->partial_pages[pg->bin_ix] != NULL)
+        zone->partial_pages[pg->bin_ix]->prev_page
+          = SLAB_PTR_PAGE(pg)
+          | SLAB_PTR_OFS(zone->partial_pages[pg->bin_ix]->prev_page);
+      zone->partial_pages[pg->bin_ix] = pg;
     } else {
-      pg->next_page = (void*)(SLAB_PTR_PAGE(pg->next_page) | SLAB_PTR_OFS(ptr));
-      pg->prev_page = (void*)n;
+      pg->next_page = SLAB_PTR_PAGE(pg->next_page)
+                    | SLAB_PTR_OFS(ptr)
+                    | (pg->next_page & 2);
+      pg->prev_page = n;
     }
   }
 }
@@ -227,7 +256,7 @@ void *SLAB_ALLOC(size_t nbytes, SLAB_ZONE_T zone) {
 
   size_t const nunits = (nbytes + sizeof(union SLAB_UNIT_T) - 1) / sizeof(union SLAB_UNIT_T);
   uint16_t ix = SLAB_MAPPING_SEARCH(nunits);
-  size_t const sz = SLAB_BIN2UNIT(ix);
+  size_t const sz = SLAB_BIN2UNITS(ix);
 
   struct SLAB_PAGE_HDR_TAG *pg = zone->partial_pages[ix];
   if (pg == NULL) {
@@ -237,11 +266,11 @@ void *SLAB_ALLOC(size_t nbytes, SLAB_ZONE_T zone) {
       pg = (struct SLAB_PAGE_HDR_TAG*)SLAB_PAGE_ALLOC();
       if (pg == NULL) return NULL;
     } else {
-      zone->free_pages = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(pg->next_pag);
+      zone->free_pages = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(pg->next_page);
       flgs = pg->next_page & 2;;
     }
     pg->prev_page = SLAB_PTR_PAGE(NULL) | 1;
-    pg->next_page = SLAB_PTR_PAGE(NULL) | SLAB_PTR_OFS(pg->units + bin_sz) | flgs | 1;
+    pg->next_page = SLAB_PTR_PAGE(NULL) | SLAB_PTR_OFS(pg->units + sz) | flgs | 1;
     pg->bin_ix = ix;
     zone->partial_pages[ix] = (struct SLAB_PAGE_HDR_TAG*)pg;
     return (void*)pg->units;
@@ -250,27 +279,30 @@ void *SLAB_ALLOC(size_t nbytes, SLAB_ZONE_T zone) {
   void *r = (void*)(SLAB_PTR_PAGE(pg) | (SLAB_PTR_OFS(pg->next_page) & ~3));
   union SLAB_UNIT_T *nxtobj;
   if (pg->next_page & 1) { // it's bump pointer.
-    nxtobj = (union SLAB_UNIT_T*)pg->next_page + bin_sz;
-    if (SLAB_PTR_PAGE(SLAB_PTR_OFS(nxtobj) + bin_sz * sizeof(union SLAB_UNIT_T)))
+    nxtobj = (union SLAB_UNIT_T*)pg->next_page + sz;
+    if (SLAB_PTR_PAGE(SLAB_PTR_OFS(nxtobj) + sz * sizeof(union SLAB_UNIT_T)))
       nxtobj = NULL;
   } else { // it's free list.
-    nxtobj = ((union SLAB_UNIT_T*)r)->ptr;
+    nxtobj = (union SLAB_UNIT_T*)((union SLAB_UNIT_T*)r)->n;
   }
 
   pg->prev_page = (uintptr_t)pg->prev_page + 1;
 
   if (nxtobj == NULL) { // no free objects left.
     struct SLAB_PAGE_HDR_TAG* nxt = (struct SLAB_PAGE_HDR_TAG*)SLAB_PTR_PAGE(pg->next_page);
-    nxt->prev_page = SLAB_PTR_PAGE(NULL) | SLAB_PTR_OFS(nxt->prev_page);
+    if (nxt != NULL)
+      nxt->prev_page = SLAB_PTR_PAGE(NULL) | SLAB_PTR_OFS(nxt->prev_page);
     zone->partial_pages[ix] = nxt;
 
     nxt = zone->full_pages;
     pg->next_page = (uintptr_t)nxt | (pg->next_page & 2);
-    pg->prev_page = SLAB_PTR_PAGE(NULL) | SLAB_PT_OFS(pg->prev_page);
-    nxt->prev_page = SLAB_PTR_PAGE(pg) | SLAB_PTR_OFS(nxt->prev_page);
-    zone->full_page = pg;
+    pg->prev_page = SLAB_PTR_PAGE(NULL) | SLAB_PTR_OFS(pg->prev_page);
+    if (nxt != NULL)
+      nxt->prev_page = SLAB_PTR_PAGE(pg) | SLAB_PTR_OFS(nxt->prev_page);
+    zone->full_pages = pg;
   } else {
-    pg->next_page = SLAB_PTR_PAGE(pg->next_page) | (SLAB_PTR_OFS(nxtobj) & ~2);
+    pg->next_page = SLAB_PTR_PAGE(pg->next_page)
+                  | (SLAB_PTR_OFS(nxtobj) & ~2)
                   | (pg->next_page & 2);
   }
   return r;
@@ -283,12 +315,10 @@ void *SLAB_ALLOC(size_t nbytes, SLAB_ZONE_T zone) {
 SLAB_API
 void SLAB_INITIALIZE_ZONE(SLAB_ZONE_T zone) {
   assert(zone != NULL);
-
   zone->free_pages = NULL;
   zone->full_pages = NULL;
   for (unsigned int i = 0; i < SLAB_SLMAPSIZE; ++i)
     zone->partial_pages[i] = NULL;
-  return zone;
 }
 
 
@@ -296,30 +326,31 @@ void SLAB_INITIALIZE_ZONE(SLAB_ZONE_T zone) {
 SLAB_API
 void SLAB_DESTROY_ZONE(SLAB_ZONE_T zone) {
   // TODO:
-  SLAB_ZONE_FREE(zone);
 }
 
 
 SLAB_API
-void SLAB_ADD_PAGE(uintptr_t pg, unsigned int npages, SLAB_ZONE_T zone) {
+void SLAB_GIVE_PAGES(uintptr_t pg, unsigned int npages, SLAB_ZONE_T zone) {
   assert((pg & ~SLAB_PAGE_MASK) == 0);
   assert(npages >= 1);
 
   do {
     struct SLAB_PAGE_HDR_TAG *p = (struct SLAB_PAGE_HDR_TAG*)pg;
-    p->next_page = zone->free_pages | 2;
+    p->next_page = (uintptr_t)zone->free_pages | 2;
     zone->free_pages = p;
     pg += SLAB_PAGE_SIZE;
   } while (--npages);
 }
 
 
-#undef SLAB_MAPPING_SEARCH
-#undef SLAB_PTR_BITS
-#undef SLAB_PAGE_SIZE
-#undef SLAB_PAGE_MARSK
-#undef SLAB_PTR_PAGE
-#undef SLAB_PTR_OFS
+#  undef SLAB_MAPPING_SEARCH
+#  undef SLAB_BIN2UNITS
+#  undef SLAB_REMOVE_PAGE_FROM_LIST
+#  undef SLAB_PTR_BITS
+#  undef SLAB_PAGE_SIZE
+#  undef SLAB_PAGE_MARSK
+#  undef SLAB_PTR_PAGE
+#  undef SLAB_PTR_OFS
 
 #endif
 
@@ -346,6 +377,7 @@ void SLAB_ADD_PAGE(uintptr_t pg, unsigned int npages, SLAB_ZONE_T zone) {
 #undef SLAB_ALLOC
 #undef SLAB_INITIALIZE_ZONE
 #undef SLAB_DESTROY_ZONE
+#undef SLAB_GIVE_PAGES
 
 
 

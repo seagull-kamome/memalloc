@@ -31,7 +31,7 @@
  * #define BUDDY_PAGE_SHIFT             (12)
  * #define BUDDY_LINES                  (5)
  * #define BUDDY_WARN_HANDLER(fmt,...)  do { } while (0)
- * #define BUDDY_NOMEMORY_HANDLER       (-1)
+ * #define BUDDY_NOMEMORY_HANDLER(zone)  (-1)
  * // #define BUDDY_PREFIX              my_
  * // #define BUDDY_DEBUG              (!)
  * // #define BUDDY_EXTRA_ZONE_DATA_T
@@ -43,16 +43,21 @@
  */
 #include <stddef.h>
 
-#define BUDDY_GLUE2(x, y)       x##y
-#define BUDDY_GLUE3(x, y)       BUDDY_GLUE2(x, y)
-#define BUDDY_GLUE(x)           BUDDY_GLUE3(BUDDY_PREFIX, x)
+#if defined(BUDDY_PREFIX)
+#  define BUDDY_GLUE2(x, y)     x##y
+#  define BUDDY_GLUE3(x, y)     BUDDY_GLUE2(x, y)
+#  define BUDDY_GLUE(x)         BUDDY_GLUE3(BUDDY_PREFIX, x)
+#else
+#  define BUDDY_GLUE(x)         x
+#endif
 
-#define BUDDY_ZONE              SLAB_GLUE(buddy_zone)
-#define BUDDY_ZONE_T            SLAB_GLUE(buddy_zone_t)
-#define BUDDY_FREE              SLAB_GLUE(buddy_free)
-#define BUDDY_ALLOC             SLAB_GLUE(buddy_alloc)
-#define BUDDY_CREATE_ZONE       SLAB_GLUE(buddy_create_zone)
-#define BUDDY_ADD_PAGE          SLAB_GLUE(buddy_add_page)
+#define BUDDY_PAGE_HDR_TAG      BUDDY_GLUE(buddy_page_hdr_tag)
+#define BUDDY_ZONE              BUDDY_GLUE(buddy_zone)
+#define BUDDY_ZONE_T            BUDDY_GLUE(buddy_zone_t)
+#define BUDDY_FREE              BUDDY_GLUE(buddy_free)
+#define BUDDY_ALLOC             BUDDY_GLUE(buddy_alloc)
+#define BUDDY_INITIALIZE_ZONE   BUDDY_GLUE(buddy_initialize_zone)
+#define BUDDY_GIVE_PAGES        BUDDY_GLUE(buddy_give_pages)
 
 #  if defined(BUDDY_PRIVATE_API) && BUDDY_PRIVATE_API
 #    define BUDDY_API  static inline
@@ -76,15 +81,15 @@ struct BUDDY_PAGE_HDR_TAG;
 typedef struct BUDDY_ZONE {
   uintptr_t page_offset;
   struct BUDDY_PAGE_HDR_TAG *bin[BUDDY_LINES];
-} BUDDY_ZONE_T;
+} *BUDDY_ZONE_T;
 
 #define BUDDY_ZONE_INITIALIZER(pgofs) { \
   .page_offset = (pgofs), \
   .bin = { NULL, }, }
 
-BUDDY_API void BUDDY_CREATE_ZONE(uintptr_t page_offset, BUDDY_ZONE_T zone);
-BUDDY_API int BUDDY_ADD_PAGE(uintptr_t pg, unsigned int npages, BUDDY_ZONE_T zone);
-BUDDY_API uintptr_t BUDDY_ALLOCATE(uint8_t order, BUDDY_ZONE_T zone);
+BUDDY_API void BUDDY_INITIALIZE_ZONE(uintptr_t page_offset, BUDDY_ZONE_T zone);
+BUDDY_API int BUDDY_GIVE_PAGES(uintptr_t pg, unsigned int npages, BUDDY_ZONE_T zone);
+BUDDY_API uintptr_t BUDDY_ALLOC(uint8_t order, BUDDY_ZONE_T zone);
 BUDDY_API void BUDDY_FREE(uintptr_t pg, uint8_t order, BUDDY_ZONE_T zone);
 
 
@@ -116,67 +121,73 @@ void BUDDY_FREE(uintptr_t pg, uint8_t order, BUDDY_ZONE_T zone) {
   assert(zone != NULL);
   assert(order < BUDDY_LINES);
 
-  uintptr_t algn = (uintptr_t)1 << (BUDDY_PAGE_SHIFT + order - 1);
+  uintptr_t align = (uintptr_t)1 << (BUDDY_PAGE_SHIFT + order - 1);
+
 retry:
-  struct BUDDY_PAGE_HDR_TAG **p = zone->bin + order++;
-  struct BUDDY_PAGE_HDR_TAG **q = NULL;
-  while (*p != NULL && (uintptr_t)*p < pg) { q = p; p = &(*p)->next; }
-  if (order < BUDDY_PAGE_LINES) {
-    uintptr_t const x = pg - zone->page_offset;
-    align <<= 1;
-    if (x & align) {
-      if (q && (((uintptr_t)p - zone->page_offset) | align) == x) {
-        *q = *p;
-        pg = (uintptr_t)p;
-        goto retry;
-      }
-    } else {
-      if (*p && (x | align) == (uintptr_t)*p - zone->page_offset) {
-        pg = (uintptr_t)*p;
-        *p = *p->next;
-        goto retry;
+  {
+    struct BUDDY_PAGE_HDR_TAG **p = zone->bin + order++;
+    struct BUDDY_PAGE_HDR_TAG **q = NULL;
+    while (*p != NULL && (uintptr_t)*p < pg) { q = p; p = &(*p)->next; }
+    if (order < BUDDY_LINES) {
+      uintptr_t const x = pg - zone->page_offset;
+      align <<= 1;
+      if (x & align) {
+        if (q && (((uintptr_t)p - zone->page_offset) | align) == x) {
+          *q = *p;
+          pg = (uintptr_t)p;
+          goto retry;
+        }
+      } else {
+        if (*p && (x | align) == (uintptr_t)*p - zone->page_offset) {
+          pg = (uintptr_t)*p;
+          *p = (*p)->next;
+          goto retry;
+        }
       }
     }
+    struct BUDDY_PAGE_HDR_TAG *pp = (struct BUDDY_PAGE_HDR_TAG*)pg;
+    pp->next = *p;
+    *p = pp;
   }
-  struct BUDDY_PAGE_HDR_TAG *pp = (struct BUDDY_PAGE_HDR_TAG*)pg;
-  pp->next = *p;
-  *p = pp;
 }
 
 
+
+
 BUDDY_API
-uintptr_t BUDDY_ALLOCATE(uint8_t order, BUDDY_ZONE_T zone) {
+uintptr_t BUDDY_ALLOC(uint8_t order, BUDDY_ZONE_T zone) {
   assert(order < BUDDY_LINES);
   assert(zone != NULL);
 
 retry:
-  uint8_t oo = order;
-  while (oo < BUDDY_LINES && zone->bins[oo] == NULL) ++oo;
-  if (oo >= BUDDY_LINES) {
-    BUDDY_WARN_HANDLER("no space left for zone(%p).", zone);
-    if (BUDDY_NOMEMORY_HANDLER(zone) >= 0) goto retry;
-    return (uintptr_t)NULL;
+  {
+    uint8_t oo = order;
+    while (oo < BUDDY_LINES && zone->bin[oo] == NULL) ++oo;
+    if (oo >= BUDDY_LINES) {
+      BUDDY_WARN_HANDLER("no space left for zone(%p).", zone);
+      if (BUDDY_NOMEMORY_HANDLER(zone) >= 0) goto retry;
+      return (uintptr_t)NULL;
+    }
+
+    uintptr_t const pg = (uintptr_t)zone->bin[oo];
+    zone->bin[oo] = zone->bin[oo]->next;
+    while (oo-- > order)
+      BUDDY_FREE(pg + (1 << (BUDDY_PAGE_SHIFT + oo)), oo, zone);
+    return pg;
   }
-
-  uintptr_t const pg = (uintptr_t)zone->bins[oo];
-  zone->bins[oo] = zone->bins[oo]->next;
-  while (oo-- > order)
-    BUDDY_FREE(pg + (1 << (BUDDY_PAGE_SHIFT + oo)), oo, zone);
-
-  return pg;
 }
 
 
 
 
 BUDDY_API
-int BUDDY_ADD_PAGE(uintptr_t pg, unsigned int npages, BUDDY_ZONE_T zone) {
+int BUDDY_GIVE_PAGES(uintptr_t pg, unsigned int npages, BUDDY_ZONE_T zone) {
   assert((pg & BUDDY_PAGE_MASK) == 0);
   assert(pg >= zone->page_offset);
   assert(zone != NULL);
 
   do {
-    BUDDY_FREE((void*)pg, 0, zone);
+    BUDDY_FREE((uintptr_t)pg, 0, zone);
     pg += BUDDY_PAGE_SIZE;
   } while (--npages);
 
@@ -186,7 +197,7 @@ int BUDDY_ADD_PAGE(uintptr_t pg, unsigned int npages, BUDDY_ZONE_T zone) {
 
 
 BUDDY_API
-void inline BUDDY_CREATE_ZONE(uintptr_t page_offset, BUDDY_ZONE_T zone) {
+void inline BUDDY_INITIALIZE_ZONE(uintptr_t page_offset, BUDDY_ZONE_T zone) {
   assert(zone != NULL);
   zone->page_offset = page_offset;
   for (unsigned int i = 0; i < BUDDY_LINES; ++ i)
@@ -207,11 +218,13 @@ void inline BUDDY_CREATE_ZONE(uintptr_t page_offset, BUDDY_ZONE_T zone) {
 #undef BUDDY_GLUE3
 #undef BUDDY_GLUE2
 #undef BUDDY_GLUE2
+
+#undef BUDDY_PAGE_HDR_TAG
 #undef BUDDY_ZONE
 #undef BUDDY_ZONE_T
 #undef BUDDY_FREE
 #undef BUDDY_ALLOC
-#undef BUDDY_CREATE_ZONE
-#undef BUDDY_ADD_PAGE
+#undef BUDDY_INITIALIZE_ZONE
+#undef BUDDY_GIVE_PAGES
 
 // vim: ts=8 sw=2 filetype=c cindent expandtab :
