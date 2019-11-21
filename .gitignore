@@ -6,5 +6,6 @@
 
 tests/spec_tlsf_sl2
 tests/spec_tlsf_sl0
+tests/spec_slab
 
 
