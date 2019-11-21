@@ -1,0 +1,138 @@
+/**
+ * @file
+ * @brief Implementation of CLASSY memory allocation algorithm.
+ * @section LICENSE
+ *
+ * MIT License
+ *
+ * Copyright (c) 2019 Hattori, Hiroki
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ * @section Usage
+ *
+ * ```` your_c_source.c
+ * #define CLASSY_ASSERT(x)      do { assert(x); } while (0)
+ * #define CLASSY_NOMEMORY_HANDLER(zone)  (-1)
+ * // #define CLASSY_PREFIX              my_
+ * // #define CLASSY_PRIVATE_API        (1)
+ * // #define NDEBUG                  (1)
+ * #include "somewherepath/slab.c_inc"
+ * ````
+ */
+
+
+
+
+
+
+
+typedef struct CLASSY_ZONE { void *head; } *CLASSY_ZONE_T;
+#define CLASSY_ZONE_INITIALIZER      { .head = (uintptr_t)NULL }
+
+
+
+
+
+union CLASSY_UNIT_T { size_t sz; union CLASS_UNIT_T *ptr; uintptr_t n; };
+#define CLASSY_SIZET_MAGIC0    ((size_t)1 << (sizeof(size_t) * 8 - 9))
+
+
+
+void CLASSY_FREE(void *ptr, CLASSY_ZONE_T zone) {
+  assert(ptr != NULL);
+  assert(zone != NULL);
+  assert((uintptr_t)ptr & ((1 << sizeof(union CLASSY_UNIT_T)) - 1) == 0);
+
+  union CLASSY_UNIT_T *p = ptr;
+  assert(p[0].sz & CLASSY_SIZET_MAGIC);
+  assert(p[0].sz & ~CLASSY_SIZET_MAGIC);
+
+  p[0] &= ~CLASSY_SIZET_MAGIC0;
+  union CLASSY_UNIT_T *pr = p + p[0] + 2;
+  if (pr[0] != 0 && (pr[0] & CLASSY_SIZET_MAGIC0) == 0) {
+    p[0].sz += 2 + pr[0];
+    if (pr[pr[0].sz + 2].sz != 0)
+  }
+
+  union CLASSY_UNIT_T *pl = p - p[1] - 2;
+
+
+}
+
+
+
+void *CLASSY_ALLOC(size_t nbytes, CLASSY_ZONE_T zone) {
+  assert(nbytes > 0);
+  assert(zone != NULL);
+
+  size_t const nunits = (nbytes + sizeof(CLASSY_UNIT_T) - 1) / sizeof(CLASSY_UNIT_T);
+  size_t const nunits0 = nunits | CLASSY_SIZET_MAGIC0;
+
+retry:
+  {
+    union CLASSY_UNIT_T *q = NULL;
+    size_t n = 0;
+    for (union CLASSY_UNIT_T **p = zone->head; *p != NULL; p = (*p)[2].ptr) {
+      union CLASSY_UNIT_T *pp = *p;
+      CLASSY_ASSERT((pp[0].sz & CLASY_SIZET_MAGIC0));
+      if (pp[0].sz == nunits0) {
+        pp[0].sz = nunits;
+        *p = pp[2].ptr;
+        return (void*)(pp + 2);
+      }
+      else if (pp[0].sz >= nunits0 && (q = NULL || pp[0].sz < n)) {
+        q = pp;
+        n = p[0].sz;
+      }
+    }
+
+    if (q == NULL) {
+      if (CLASSY_NOMEMORY_HANDLER(zone) >= 0) goto retry;
+      return NULL;
+    }
+
+    q[q[0].sz - nunits - 2] = nunits;
+    q[q[0].sz - nunits - 1] = q[0].sz - nunits0 - 2;
+    if (q[2 + q[0].sz].sz != 0) nxt[1].sz = nunits;
+    q[0].sz -= nunits + 2;
+    return (void*)(q + q[0].sz + 2);
+  }
+}
+
+
+size_t CLASSY_GIVE_BLOCK(void *ptr, size_t nbytes, CLASSY_ZONE_T zone) {
+  assert(ptr != NULL);
+  assert(nbytes > 0);
+  assert(zone != NULL);
+
+  uintptr_t blk = (uintptr_t)ptr & ~(sizeof(CLASSY_UNIT_T) - 1);
+  size_t nunits = (nbytes - (uintptr_t)ptr - blk) / sizeof(CLASSY_UNIT_T);
+  if (nunits < 4) return 0;
+
+  union CLASSY_UNIT_T *p = (union CLASSY_UNIT_T*)blk;
+  p[0].sz = (nunis - 3) | CLASSY_SIZET_MAGIC0;
+  p[1].sz = 0;
+  p[2].ptr = (union CLASSY_UNIT_T*)zone->head;
+  p[nunits - 1].sz = 0;
+  zone->head = (uintptr_t)p;
+  return nunits * sizeof(CLASSY_UNIT_T);
+}
+
+// vim: ts=8 sw=2 filetype=c cindent expandtab :
