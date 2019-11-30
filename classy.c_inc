@@ -36,66 +36,117 @@
  * #include "somewherepath/slab.c_inc"
  * ````
  */
+#include <stddef.h>
+#include <stdint.h>
+#include <assert.h>
+
+#if defined(CLASSY_PREFIX)
+#  define CLASSY_GLUE2(x, y)      x##y
+#  define CLASSY_GLUE3(x, y)      CLASSY_GLUE2(x, y)
+#  define CLASSY_GLUE(x)          CLASSSY_GLUE3(CLASSY_PREFIX, x)
+#else
+#  define CLASSY_GLUE(x)          x
+#endif
+
+
+#define CLASSY_ZONE               CLASSY_GLUE(classy_zone)
+#define CLASSY_ZONE_T             CLASSY_GLUE(classy_zone_t)
+#define CLASSY_FREE               CLASSY_GLUE(classy_free)
+#define CLASSY_ALLOC              CLASSY_GLUE(classy_alloc)
+#define CLASSY_GIVE_BLOCK         CLASSY_GLUE(classy_give_block)
+
+#if defined(CLASSY_PRIVATE_API) && CLASSY_PRIVATE_API
+#  define CLASSY_API  static inline
+#else
+#  define CLASSY_API
+#endif
+
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+typedef struct CLASSY_ZONE { CLASSY_LIST_HEAD_T head; } *CLASSY_ZONE_T;
+#define CLASSY_ZONE_INITIALIZER(name)   { \
+  .head = CLASSY_LIST_HEAD_INITIALIZER(name) }
+CLASSY_API void CLASSY_FREE(void *ptr, CLASSY_ZONE_T zone);
+CLASSY_API void *CLASSY_ALLOC(size_t nbytes, CLASSY_ZONE_T zone);
+CLASSY_API size_t CLASSY_GIVE_BLOCK(void *ptr, size_t nbytes, CLASSY_ZONE_T zone);
 
 
 
 
+/* ************************************************************************ */
+#if defined(CLASSY_DECL_ONLY) && CLASSY_DECL_ONLY
+#  if defined(CLASSY_PRIVATE_API && CLASSY_PRIVATE_API
+#    error "CLASSY_DECL_ONLY and CLASSY_PRIVATE_API conflict."
+#  endif
+#else
 
 
-
-typedef struct CLASSY_ZONE { void *head; } *CLASSY_ZONE_T;
-#define CLASSY_ZONE_INITIALIZER      { .head = (uintptr_t)NULL }
-
-
-
-
-
+#define CLASSY_UNIT_T           CLASSY_GLUE(classy_unit_t)
 union CLASSY_UNIT_T { size_t sz; union CLASS_UNIT_T *ptr; uintptr_t n; };
 #define CLASSY_SIZET_MAGIC0    ((size_t)1 << (sizeof(size_t) * 8 - 9))
 
 
 
+CLASSY_API
 void CLASSY_FREE(void *ptr, CLASSY_ZONE_T zone) {
   assert(ptr != NULL);
   assert(zone != NULL);
   assert((uintptr_t)ptr & ((1 << sizeof(union CLASSY_UNIT_T)) - 1) == 0);
 
   union CLASSY_UNIT_T *p = ptr;
-  assert(p[0].sz & CLASSY_SIZET_MAGIC);
-  assert(p[0].sz & ~CLASSY_SIZET_MAGIC);
+  assert((p[0].sz & CLASSY_SIZET_MAGIC) == 0);
+  assert((p[0].sz & ~CLASSY_SIZET_MAGIC) != NULL);
+  assert(p[0].sz * sizeof(union CLASSY_UNIT_T) >= sizeof(CLASSY_LIST_HEAD_T));
 
-  p[0] &= ~CLASSY_SIZET_MAGIC0;
-  union CLASSY_UNIT_T *pr = p + p[0] + 2;
-  if (pr[0] != 0 && (pr[0] & CLASSY_SIZET_MAGIC0) == 0) {
-    p[0].sz += 2 + pr[0];
-    if (pr[pr[0].sz + 2].sz != 0)
+  size_t n = p[0];
+  size_t nl = p[1];
+  if (p[2 + n].sz & CLASSY_SIZET_MAGIC0) {
+    CLASSY_LIST_REMOVE((CLASSY_LIST_HEAD_T*)(p + n + 4));
+    n += p[n + 2].sz & ~CLASSY_SIZET_MAGIC0;
   }
 
-  union CLASSY_UNIT_T *pl = p - p[1] - 2;
-
-
+  if (p[-nl - 2] & CLASSY_SIZET_MAGIC0) {
+    p -= nl + 2;
+    n += nl + 2;
+    nl = p[1];
+  } else {
+    CLASSY_LIST_INSERT(&zone->head, (CLASSY_LIST_HEAD_T*)(p + 2));
+  }
+  p[0] = n | CLASSY_SIZET_MAGIC0;
+  p[1] = nl;
 }
 
 
 
+CLASSY_API
 void *CLASSY_ALLOC(size_t nbytes, CLASSY_ZONE_T zone) {
   assert(nbytes > 0);
   assert(zone != NULL);
 
-  size_t const nunits = (nbytes + sizeof(CLASSY_UNIT_T) - 1) / sizeof(CLASSY_UNIT_T);
+  size_t const minunits
+    = (sizeof(CLASSY_LIST_HEAD_T) + sizeof(CLASSY_UNIT_T) - 1)
+      / sizeof(CLASSY_UNIT_T);
+  size_t const requnits = (nbytes + sizeof(CLASSY_UNIT_T) - 1)
+                            / sizeof(CLASSY_UNIT_T);
+  size_t const nunits = (requnis < minunits)? minunits : requnits;
   size_t const nunits0 = nunits | CLASSY_SIZET_MAGIC0;
 
 retry:
   {
     union CLASSY_UNIT_T *q = NULL;
     size_t n = 0;
-    for (union CLASSY_UNIT_T **p = zone->head; *p != NULL; p = (*p)[2].ptr) {
-      union CLASSY_UNIT_T *pp = *p;
+    for (CLASSY_LIST_HEAD_T *p = CLASSY_LIST_NEXT(&zone->head);
+        p != &zone->head; p = CLASSY_LIST_NEXT(p)) {
+      union CLASSY_UNIT_T *pp = (union CLASSY_UNIT_T*)p - 2;
       CLASSY_ASSERT((pp[0].sz & CLASY_SIZET_MAGIC0));
+
       if (pp[0].sz == nunits0) {
+        CLASSY_LIST_REMOVE(p);
         pp[0].sz = nunits;
-        *p = pp[2].ptr;
-        return (void*)(pp + 2);
+        return (void*)p;
       }
       else if (pp[0].sz >= nunits0 && (q = NULL || pp[0].sz < n)) {
         q = pp;
@@ -108,6 +159,11 @@ retry:
       return NULL;
     }
 
+    if ((q[0].sz - nunits0) < minunits) {
+      CLASSY_LIST_REMOVE((CLASSY_LIST_HEAD_T*)&q[2]);
+      return (void*)&q[2];
+    }
+
     q[q[0].sz - nunits - 2] = nunits;
     q[q[0].sz - nunits - 1] = q[0].sz - nunits0 - 2;
     if (q[2 + q[0].sz].sz != 0) nxt[1].sz = nunits;
@@ -117,6 +173,7 @@ retry:
 }
 
 
+CLASSY_API
 size_t CLASSY_GIVE_BLOCK(void *ptr, size_t nbytes, CLASSY_ZONE_T zone) {
   assert(ptr != NULL);
   assert(nbytes > 0);
@@ -129,10 +186,33 @@ size_t CLASSY_GIVE_BLOCK(void *ptr, size_t nbytes, CLASSY_ZONE_T zone) {
   union CLASSY_UNIT_T *p = (union CLASSY_UNIT_T*)blk;
   p[0].sz = (nunis - 3) | CLASSY_SIZET_MAGIC0;
   p[1].sz = 0;
-  p[2].ptr = (union CLASSY_UNIT_T*)zone->head;
   p[nunits - 1].sz = 0;
-  zone->head = (uintptr_t)p;
+
+  CLASSY_LIST_INSERT(&zone->head, (CLASSY_LIST_HEAD_T*)&p[2]);
+
   return nunits * sizeof(CLASSY_UNIT_T);
 }
+
+
+#undef CLASSY_UNIT_T
+#undef CLASSY_SIZET_MAGIC0
+
+#endif
+
+
+#if defined(__cplusplus)
+}
+#endif
+
+#undef CLASSY_GLUE2
+#undef CLASSY_GLUE3
+#undef CLASSY_GLUE
+
+#undef CLASSY_ZONE
+#undef CLASSY_ZONE_T
+#undef CLASSY_FREE
+#undef CLASSY_ALLOC
+#undef CLASSY_GIVE_BLOCK
+#undef CLASSY_API
 
 // vim: ts=8 sw=2 filetype=c cindent expandtab :
